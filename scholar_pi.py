@@ -13,7 +13,7 @@ from groq import Groq, RateLimitError
 # --- 1. CONFIGURATION & ENVIRONMENT ---
 st.set_page_config(page_title="Scholarπ Paper Evaluator", page_icon="🎓", layout="wide")
 
-# We define our primary and fallback models here
+# Primary and fallback models
 PRIMARY_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "llama-3.1-8b-instant"
 
@@ -85,16 +85,16 @@ def calculate_pi_index(base_scores, uniqueness_score_10pt, delta_t=0):
 def process_paper(file_bytes, filename):
     file_hash = get_file_hash_from_bytes(file_bytes)
     
-    # Cache Check
+    # Cache Check (Fix applied here)
     cursor = conn.cursor()
     cursor.execute("SELECT pi_index, justifications, timestamp FROM papers WHERE file_hash=?", (file_hash,))
-    cached_row = cursor.fetchonefetchone() if hasattr(cursor, 'fetchone') else cursor.fetchone()
+    cached_row = cursor.fetchone()
 
     if cached_row:
         cached_pi, cached_justifications, cached_time_str = cached_row
         cached_time = datetime.fromisoformat(cached_time_str)
         if datetime.now() - cached_time < timedelta(days=30):
-            return cached_pi, json.loads(cached_justifications), True, None
+            return cached_pi, json.loads(cached_justifications), True, False
 
     # Extract Text
     doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -138,14 +138,18 @@ def process_paper(file_bytes, filename):
         
         return json.loads(scores_json)
 
-    # Execution with Smart Fallback
+    # Execution with Smart Fallback & Real-Time Notifications
     used_fallback = False
     try:
         # Try evaluating with the primary 70B model
         scores_data = evaluate_with_model(PRIMARY_MODEL)
     except RateLimitError:
-        # If RateLimit is hit, pause and switch to the Instant model
+        # Instant UI Notifications
         used_fallback = True
+        st.toast("⚠️ Rate limit reached! Switching to Instant Model...", icon="🔄")
+        st.warning(f"Free-tier limits reached for `{PRIMARY_MODEL}`. Automatically switching to `{FALLBACK_MODEL}` to finish the job without crashing. Please wait a few seconds...")
+        
+        # Pause to let the API cooldown, then retry with fallback
         time.sleep(3) 
         scores_data = evaluate_with_model(FALLBACK_MODEL)
     
@@ -179,7 +183,7 @@ if uploaded_file is not None:
             st.success("ℹ️ Retrieved evaluation metrics from persistent system cache.")
         else:
             if used_fallback:
-                st.warning(f"⚠️ Primary model rate limit reached. Evaluation completed successfully using fallback `{FALLBACK_MODEL}` model.")
+                st.success(f"✅ Analysis completed successfully using `{FALLBACK_MODEL}`!")
             else:
                 st.success(f"✅ Analysis completed successfully using `{PRIMARY_MODEL}`!")
 
