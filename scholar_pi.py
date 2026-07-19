@@ -23,8 +23,7 @@ SEED_NUMBER = 42
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
 os.makedirs(BASE_DIR, exist_ok=True)
-# Updated DB name for floating point constant migration
-DB_PATH = os.path.join(BASE_DIR, 'pi_index_assessment_v7_pos.db')
+DB_PATH = os.path.join(BASE_DIR, 'pi_index_assessment_v8_pos.db')
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 if not GROQ_API_KEY:
@@ -36,13 +35,11 @@ client = Groq(api_key=GROQ_API_KEY)
 def get_pi_float(block_height):
     """Increases Pi accuracy by revealing more decimals as epochs (blocks) progress."""
     pi_str = "3.141592653589793238462643383279502884197169399375105820974944592"
-    # Block 1 starts at 3.14 (4 chars), Block 2 -> 3.141, etc.
     length = min(block_height + 3, len(pi_str))
     return float(pi_str[:length])
 
 # --- 3. BLOCKCHAIN (PROOF OF STAKE) & DATABASE INITIALIZATION ---
 def validate_block_pos(block_index, weights, timestamp, previous_hash, eval_hash, model_used):
-    """Simulates Proof-of-Stake validation to generate a unique block hash per paper."""
     validator_node = "Validator_Pi_" + hashlib.md5(str(time.time()).encode()).hexdigest()[:6]
     data = f"{block_index}{weights}{timestamp}{previous_hash}{validator_node}{eval_hash}{model_used}".encode('utf-8')
     block_hash = hashlib.sha256(data).hexdigest()
@@ -69,7 +66,6 @@ def init_system():
     
     cursor.execute("SELECT COUNT(*) FROM blockchain_pos_weights")
     if cursor.fetchone()[0] == 0:
-        # Genesis Block: Constants initialized to exactly 1.0
         genesis_weights = [1.0] * 8
         prev_hash = "0" * 64
         timestamp = datetime.now().isoformat()
@@ -86,32 +82,21 @@ conn = init_system()
 
 # --- 4. DYNAMIC WEIGHT ADAPTATION (LLM DEPENDENT) ---
 def calculate_model_driven_weights(old_weights, scores, model_name, block_height):
-    """
-    Formulates the new constant based on the model's decision, LLM version, size, Pi, and delta.
-    """
     if "70b" in model_name:
         v, s = 3.3, 70.0
     else:
         v, s = 3.1, 8.0
         
     pi_acc = get_pi_float(block_height)
-    
-    # Delta of different models: |(V1 * S1) - (V2 * S2)| = |(3.3 * 70) - (3.1 * 8)|
     delta_models = abs((3.3 * 70.0) - (3.1 * 8.0)) 
     
     new_weights = []
     for i, old_w in enumerate(old_weights):
         c_score = scores[i]
-        
-        # Change is formulated by LLM version, size, pi, delta of models, and the criteria value decided
         delta_w = ((v * s) / (delta_models * pi_acc)) * (c_score / 100.0)
-        
-        # We blend the dynamic delta into the old weight. 
-        # Using a dampening factor so it oscillates structurally around 1.0 over time.
         w_new = old_w * 0.85 + (1.0 + delta_w * 0.15) * 0.15
         new_weights.append(w_new)
         
-    # Normalize so the sum remains equal to the original baseline (8.0)
     sum_w = sum(new_weights)
     normalized_weights = [(w / sum_w) * 8.0 for w in new_weights]
     
@@ -210,10 +195,8 @@ def process_single_pdf(file_bytes, filename, scope):
     scores_dict = raw_data.get("scores", {})
     scores = [scores_dict.get(k, 50.0) for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]]
     
-    # Calculate new dynamic weights based on this specific paper and model
     new_weights = calculate_model_driven_weights(old_weights, scores, model_used, block_height)
     
-    # Mine new block for this specific evaluation
     timestamp = datetime.now().isoformat()
     new_height = block_height + 1
     val_node, block_hash = validate_block_pos(new_height, new_weights, timestamp, previous_hash, file_hash, model_used)
@@ -228,7 +211,6 @@ def process_single_pdf(file_bytes, filename, scope):
     fields = raw_data.get("fields", ["General Science"])
     subfields = raw_data.get("subfields", ["General"])
     
-    # Calculate final score utilizing the newly minted constant weights
     final_score = float(np.dot(scores, new_weights)) / 8.0
     drift = calculate_complex_drift(scope_alignment, scores)
     
@@ -297,7 +279,6 @@ def generate_bubble_chart(scope):
         size = row['bubble_size']
         count = row['count']
         
-        # Labels removed, completely reliant on color palette and hover
         fig.add_trace(go.Scatter(
             x=[row['x']], y=[row['y']],
             mode='markers',
@@ -426,7 +407,7 @@ with tab2:
 
 with tab3:
     cursor = conn.cursor()
-    cursor.execute("SELECT block_height, w1, w2, w3, w4, w5, w6, w7, w8, model_used, eval_hash FROM blockchain_pos_weights ORDER BY block_height DESC LIMIT 1")
+    cursor.execute("SELECT block_height, w1, w2, w3, w4, w5, w6, w7, w8, model_used, eval_hash, block_hash FROM blockchain_pos_weights ORDER BY block_height DESC LIMIT 1")
     epoch_data = cursor.fetchone()
     
     if epoch_data:
@@ -434,11 +415,25 @@ with tab3:
         weights = epoch_data[1:9]
         model_used = epoch_data[9]
         eval_hash = epoch_data[10]
+        block_hash = epoch_data[11]
         
         current_pi_base = get_pi_float(block_height)
         
-        st.markdown(f"**Last Model Orchestration:** `{model_used}` | **Epoch Block:** `{block_height}`")
-        st.markdown(r"*Weights $(\varpi)$ are initialized at $1.0$ and evolve iteratively via LLM version, parameter size, $\pi$ accuracy progression, and the criteria evaluation delta of the selected model.*")
+        st.markdown(f"**Last Model Orchestration:** `{model_used}` | **Epoch Block:** `{block_height}` | **Pi Acc:** `{current_pi_base}`")
+        
+        st.markdown("""
+        **Weight Evolution Dynamics:**
+        $$ \varpi_{i}^{(t+1)} = \mathcal{N} \left( \lambda \varpi_{i}^{(t)} + (1-\lambda) \left[ 1 + \kappa \left( \frac{V \cdot S}{\Delta_{\mathcal{M}} \cdot \pi_{(t)}} \right) \left( \frac{C_i}{100} \right) \right] \right) $$
+        
+        **Parameters:**
+        *   $\varpi_i^{(t)}$ : Current weight for criteria $i$ at epoch $t$.
+        *   $\mathcal{N}$ : Normalization operator ensuring $\sum \varpi_i = 8.0$.
+        *   $\lambda, \kappa$ : Dampening coefficients (set to $0.85$ and $0.15$ respectively).
+        *   $V, S$ : Selected LLM Version and Parameter Size.
+        *   $\Delta_{\mathcal{M}}$ : Constant structural delta between available candidate models.
+        *   $\pi_{(t)}$ : Epoch-dependent $\pi$ progression accuracy.
+        *   $C_i$ : The raw evaluation score assigned to criteria $i$ by the model.
+        """)
         st.markdown("---")
         
         cols = st.columns(4)
@@ -457,11 +452,46 @@ with tab3:
             if i < 8: 
                 name, symbol = labels[i]
                 col.markdown(f"**{name} ({symbol})**")
-                col.markdown(f"<h3 style='margin-top:0px; margin-bottom:5px;'>{weights[i]:.6f}</h3>", unsafe_allow_html=True)
+                col.markdown(f"<h3 style='margin-top:0px; margin-bottom:5px;'>{weights[i]:.3f}</h3>", unsafe_allow_html=True)
                 
-                with col.expander("Proof of Stake Seed"):
+                with col.expander("PoS Seed"):
                     seed_hash = hashlib.sha256(f"{weights[i]}_pos_{block_height}_{current_pi_base}_{eval_hash}".encode()).hexdigest()
-                    st.code(f"Seed:\n{seed_hash[:24]}...\nPi Acc: {current_pi_base}", language="text")
+                    st.code(f"{seed_hash[:24]}...", language="text")
+
+        st.markdown("---")
+        st.markdown("### PoS Blockchain Explorer")
+        
+        explore_col1, explore_col2 = st.columns([3, 1])
+        with explore_col1:
+            search_query = st.text_input("Enter Document Evaluation Hash or Block Hash to verify ledger record...")
+        with explore_col2:
+            st.write("")
+            st.write("")
+            search_btn = st.button("Verify Record")
+            
+        if search_btn and search_query:
+            cursor.execute("SELECT * FROM blockchain_pos_weights WHERE block_hash=? OR eval_hash=?", (search_query, search_query))
+            record = cursor.fetchone()
+            if record:
+                st.success("Valid Block Found on Ledger!")
+                st.json({
+                    "Block Height": record[0],
+                    "Timestamp": record[9],
+                    "Model Used": record[13],
+                    "Validator Node": record[11],
+                    "Block Hash": record[12],
+                    "Previous Hash": record[10],
+                    "Evaluation Hash (Document)": record[14],
+                    "Weights Matrix (w1..w8)": record[1:9]
+                })
+            else:
+                st.error("No block matching that signature was found on the ledger.")
+                
+        with st.expander("View Recent Ledger Blocks"):
+            cursor.execute("SELECT block_height, timestamp, model_used, block_hash FROM blockchain_pos_weights ORDER BY block_height DESC LIMIT 10")
+            recent_blocks = cursor.fetchall()
+            df_blocks = pd.DataFrame(recent_blocks, columns=["Height", "Timestamp", "Model", "Block Hash"])
+            st.dataframe(df_blocks, use_container_width=True, hide_index=True)
 
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
