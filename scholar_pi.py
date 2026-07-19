@@ -293,13 +293,13 @@ def generate_interactive_bubble_chart(scope, user_id):
     net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
     
     # --- PHYSICS SET TO STOP JIGGLING ---
-    # 1. Physics set to BarnesHut for better spacing control
+    # --- PHYSICS SET TO CLUSTER WITH GRAVITY ---
     physics_options = """
     {
       "physics": {
         "barnesHut": {
           "gravitationalConstant": -8000,
-          "centralGravity": 0.3,
+          "centralGravity": 0.8,
           "springLength": 100,
           "avoidOverlap": 1.0
         },
