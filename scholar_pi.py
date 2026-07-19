@@ -295,48 +295,74 @@ def generate_interactive_bubble_chart(scope, user_id):
     df_topics = pd.DataFrame(all_topics)
     topic_counts = df_topics.groupby(['topic', 'category']).size().reset_index(name='count')
     
-    # 1. Define distinct colors
-    color_map = {'Field': '#FF5733', 'Subfield': '#3380FF'}
-    
-    # 2. Initialize Network (Ensure notebook=False for Streamlit)
+    # 1. Initialize Network
     net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
     
-    # 3. Physics Options
+    # 2. Advanced Physics: Gravity and Centrality
+    # High centralGravity makes large nodes act like gravity wells for smaller ones
     physics_options = """
     {
       "physics": {
         "forceAtlas2Based": {
-          "gravitationalConstant": -50,
-          "avoidOverlap": 0.5
+          "gravitationalConstant": -150,
+          "centralGravity": 0.05,
+          "springLength": 100,
+          "springConstant": 0.08,
+          "avoidOverlap": 0.8
         },
         "solver": "forceAtlas2Based"
+      },
+      "nodes": {
+        "borderWidth": 2,
+        "shadow": true
       }
     }
     """
     net.set_options(physics_options)
     
+    # 3. Add Nodes with size scaling and color
+    # We use high-contrast colors for Field (Big/Center) and Subfield (Small)
     for _, row in topic_counts.iterrows():
-        # Sanitize text
-        safe_topic = str(row['topic']).replace("'", "\\'")
-        safe_cat = str(row['category']).replace("'", "\\'")
-        safe_freq = str(row['count'])
-        
-        tooltip_text = f"Topic: {safe_topic} | Category: {safe_cat} | Frequency: {safe_freq}"
+        # Field: Big and Orange, Subfield: Small and Blue
+        is_field = row['category'] == 'Field'
+        node_size = 40 + (row['count'] * 8) if is_field else 20 + (row['count'] * 4)
+        node_color = '#FF4500' if is_field else '#1E90FF'
         
         net.add_node(
             n_id=row['topic'],
             label=row['topic'],
-            title=tooltip_text,
-            size=20 + (row['count'] * 4),
-            color=color_map.get(row['category'], '#808080'),
+            title=f"Topic: {row['topic']} | Cat: {row['category']} | Freq: {row['count']}",
+            size=node_size,
+            color=node_color,
             group=row['category']
         )
         
-    # Generate HTML string directly
     html_string = net.generate_html()
-        
-    return html_string, topic_counts
-
+    
+    # 4. Color Legend & Frequency Table
+    # Injecting custom CSS to make the legend and table pop
+    legend_css = """
+    <style>
+        .legend-container { background: #f9f9f9; padding: 15px; border-radius: 10px; border: 1px solid #ddd; }
+        .legend-item { display: inline-block; margin-right: 20px; font-weight: bold; }
+        .table-big { width: 100%; font-size: 18px; border-collapse: collapse; }
+        .table-big th { background-color: #2c3e50; color: white; padding: 12px; }
+        .table-big td { border-bottom: 1px solid #ddd; padding: 10px; }
+    </style>
+    <div class="legend-container">
+        <span class="legend-item"><span style="color:#FF4500;">●</span> Primary Fields (Gravity Centers)</span>
+        <span class="legend-item"><span style="color:#1E90FF;">●</span> Subfields (Satellite Nodes)</span>
+    </div>
+    """
+    
+    # Formatting table
+    table_html = "<table class='table-big'><tr><th>Topic</th><th>Category</th><th>Frequency</th></tr>"
+    for _, row in topic_counts.iterrows():
+        color = '#FF4500' if row['category'] == 'Field' else '#1E90FF'
+        table_html += f"<tr><td style='color:{color}'>{row['topic']}</td><td>{row['category']}</td><td>{row['count']}</td></tr>"
+    table_html += "</table>"
+    
+    return legend_css + html_string + table_html, topic_counts
 # --- 8. USER INTERFACE ---
 st.title("π-Index Assessment Engine")
 st.markdown("**Upload papers, define your scope of research, let π-index filter noise and have better results**")
