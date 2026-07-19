@@ -295,74 +295,74 @@ def generate_interactive_bubble_chart(scope, user_id):
     df_topics = pd.DataFrame(all_topics)
     topic_counts = df_topics.groupby(['topic', 'category']).size().reset_index(name='count')
     
-    # 1. Initialize Network
+    # Generate a unique color for every unique topic
+    unique_topics = topic_counts['topic'].unique()
+    import colorsys
+    def get_color(i, n):
+        h, s, v = i/n, 0.7, 0.9
+        rgb = colorsys.hsv_to_rgb(h, s, v)
+        return '#%02x%02x%02x' % tuple(int(x * 255) for x in rgb)
+    
+    color_map = {topic: get_color(i, len(unique_topics)) for i, topic in enumerate(unique_topics)}
+    
+    # Initialize Network
     net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
     
-    # 2. Advanced Physics: Gravity and Centrality
-    # High centralGravity makes large nodes act like gravity wells for smaller ones
+    # High centralGravity + mass makes big bubbles central gravity wells
     physics_options = """
     {
       "physics": {
         "forceAtlas2Based": {
           "gravitationalConstant": -150,
-          "centralGravity": 0.05,
-          "springLength": 100,
-          "springConstant": 0.08,
+          "centralGravity": 0.08,
+          "springLength": 120,
           "avoidOverlap": 0.8
         },
         "solver": "forceAtlas2Based"
-      },
-      "nodes": {
-        "borderWidth": 2,
-        "shadow": true
       }
     }
     """
     net.set_options(physics_options)
     
-    # 3. Add Nodes with size scaling and color
-    # We use high-contrast colors for Field (Big/Center) and Subfield (Small)
     for _, row in topic_counts.iterrows():
-        # Field: Big and Orange, Subfield: Small and Blue
-        is_field = row['category'] == 'Field'
-        node_size = 40 + (row['count'] * 8) if is_field else 20 + (row['count'] * 4)
-        node_color = '#FF4500' if is_field else '#1E90FF'
+        # Large bubbles have higher mass to exert more gravity
+        node_size = 25 + (row['count'] * 6)
+        node_mass = 1 + (row['count'] * 2) 
         
         net.add_node(
             n_id=row['topic'],
             label=row['topic'],
-            title=f"Topic: {row['topic']} | Cat: {row['category']} | Freq: {row['count']}",
+            title=f"Topic: {row['topic']} | Freq: {row['count']}",
             size=node_size,
-            color=node_color,
-            group=row['category']
+            mass=node_mass,
+            color=color_map[row['topic']]
         )
         
     html_string = net.generate_html()
     
-    # 4. Color Legend & Frequency Table
-    # Injecting custom CSS to make the legend and table pop
-    legend_css = """
+    # Custom CSS/HTML for the Table
+    table_html = """
     <style>
-        .legend-container { background: #f9f9f9; padding: 15px; border-radius: 10px; border: 1px solid #ddd; }
-        .legend-item { display: inline-block; margin-right: 20px; font-weight: bold; }
-        .table-big { width: 100%; font-size: 18px; border-collapse: collapse; }
-        .table-big th { background-color: #2c3e50; color: white; padding: 12px; }
+        .table-big { width: 100%; font-size: 18px; border-collapse: collapse; margin-top: 20px; }
+        .table-big th { background-color: #2c3e50; color: white; padding: 12px; text-align: left; }
         .table-big td { border-bottom: 1px solid #ddd; padding: 10px; }
+        .color-box { width: 20px; height: 20px; display: inline-block; border-radius: 3px; }
     </style>
-    <div class="legend-container">
-        <span class="legend-item"><span style="color:#FF4500;">●</span> Primary Fields (Gravity Centers)</span>
-        <span class="legend-item"><span style="color:#1E90FF;">●</span> Subfields (Satellite Nodes)</span>
-    </div>
+    <table class='table-big'>
+        <tr><th>Color</th><th>Topic</th><th>Category</th><th>Frequency</th></tr>
     """
-    
-    # Formatting table
-    table_html = "<table class='table-big'><tr><th>Topic</th><th>Category</th><th>Frequency</th></tr>"
     for _, row in topic_counts.iterrows():
-        color = '#FF4500' if row['category'] == 'Field' else '#1E90FF'
-        table_html += f"<tr><td style='color:{color}'>{row['topic']}</td><td>{row['category']}</td><td>{row['count']}</td></tr>"
+        color = color_map[row['topic']]
+        table_html += f"""
+        <tr>
+            <td><div class='color-box' style='background-color:{color};'></div></td>
+            <td>{row['topic']}</td>
+            <td>{row['category']}</td>
+            <td>{row['count']}</td>
+        </tr>"""
     table_html += "</table>"
     
-    return legend_css + html_string + table_html, topic_counts
+    return html_string + table_html, topic_counts
 # --- 8. USER INTERFACE ---
 st.title("π-Index Assessment Engine")
 st.markdown("**Upload papers, define your scope of research, let π-index filter noise and have better results**")
