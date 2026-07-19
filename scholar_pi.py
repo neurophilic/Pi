@@ -2,17 +2,21 @@ import os
 import sqlite3
 import json
 import hashlib
+import time
 from datetime import datetime, timedelta
 from decimal import Decimal, getcontext
 import requests
 import streamlit as st
 import fitz  # PyMuPDF
-from groq import Groq
+from groq import Groq, RateLimitError
 
 # --- 1. CONFIGURATION & ENVIRONMENT ---
 st.set_page_config(page_title="Scholarπ Paper Evaluator", page_icon="🎓", layout="wide")
 
-MODEL_NAME = "llama-3.3-70b-versatile"
+# We define our primary and fallback models here
+PRIMARY_MODEL = "llama-3.3-70b-versatile"
+FALLBACK_MODEL = "llama-3.1-8b-instant"
+
 SEED_NUMBER = 42
 MAX_TEXT_TOKENS_FOR_LLM = 4000
 
@@ -84,47 +88,66 @@ def process_paper(file_bytes, filename):
     # Cache Check
     cursor = conn.cursor()
     cursor.execute("SELECT pi_index, justifications, timestamp FROM papers WHERE file_hash=?", (file_hash,))
-    cached_row = cursor.fetchone()
+    cached_row = cursor.fetchonefetchone() if hasattr(cursor, 'fetchone') else cursor.fetchone()
 
     if cached_row:
         cached_pi, cached_justifications, cached_time_str = cached_row
         cached_time = datetime.fromisoformat(cached_time_str)
         if datetime.now() - cached_time < timedelta(days=30):
-            return cached_pi, json.loads(cached_justifications), True
+            return cached_pi, json.loads(cached_justifications), True, None
 
     # Extract Text
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     text = " ".join([page.get_text() for page in doc])
 
-    # Keyword Extraction using Groq Cloud
-    kw_response = client.chat.completions.create(
-        messages=[{"role": "user", "content": f"Extract the 5 most critical research keywords. Return JSON: {{'keywords': []}}. Text: {text[:MAX_TEXT_TOKENS_FOR_LLM]}"}],
-        model=MODEL_NAME, temperature=0, seed=SEED_NUMBER, response_format={"type": "json_object"}
-    )
-    keywords = json.loads(kw_response.choices[0].message.content).get('keywords', [])
-    
-    # Semantic Scholar Sweep
-    query = " ".join(keywords)
-    try:
-        res = requests.get("https://api.semanticscholar.org/graph/v1/paper/search", params={"query": query, "limit": 100, "fields": "title,year"})
-        data = res.json().get('data', [])
-        if data:
-            search_results = f"Total related papers found in top sweep: {len(data)}\n" + "\n".join([f"- {item['title']} ({item.get('year', 'N/A')})" for item in data])
-        else:
-            search_results = "No external data found. This topic appears completely pioneering."
-    except:
-        search_results = "No external data found due to API error."
+    # AI Evaluation Function
+    def evaluate_with_model(target_model):
+        # Keyword Extraction
+        kw_response = client.chat.completions.create(
+            messages=[{"role": "user", "content": f"Extract the 5 most critical research keywords. Return JSON: {{'keywords': []}}. Text: {text[:MAX_TEXT_TOKENS_FOR_LLM]}"}],
+            model=target_model, temperature=0, seed=SEED_NUMBER, response_format={"type": "json_object"}
+        )
+        keywords = json.loads(kw_response.choices[0].message.content).get('keywords', [])
+        
+        time.sleep(2) # Safety pause to avoid rapid sequential hits
+        
+        # Semantic Scholar Sweep
+        query = " ".join(keywords)
+        try:
+            res = requests.get("https://api.semanticscholar.org/graph/v1/paper/search", params={"query": query, "limit": 100, "fields": "title,year"})
+            data = res.json().get('data', [])
+            if data:
+                search_results = f"Total related papers found in top sweep: {len(data)}\n" + "\n".join([f"- {item['title']} ({item.get('year', 'N/A')})" for item in data])
+            else:
+                search_results = "No external data found. This topic appears completely pioneering."
+        except:
+            search_results = "No external data found due to API error."
 
-    # Unified Evaluation using Groq Cloud
-    with open(CRITERIA_PATH, 'r') as f: criteria = f.read()
-    eval_prompt = f"""Evaluate the paper based on these criteria: {criteria}. 
-    For S14 (WebGroundedUniqueness), gauge how saturated the topic is by reviewing this list of similar research:
-    {search_results}
-    Return ONLY a JSON object with keys S1-S13, S4b, S14, and S15. Each key must contain a nested object with 'score' (a number 0-10) and 'reason' (a concise 1-2 sentence explanation).
-    Paper Text: {text[:MAX_TEXT_TOKENS_FOR_LLM]}"""
-    
-    scores_json = client.chat.completions.create(messages=[{"role": "user", "content": eval_prompt}], model=MODEL_NAME, temperature=0, seed=SEED_NUMBER, response_format={"type": "json_object"}).choices[0].message.content
-    scores_data = json.loads(scores_json)
+        # Unified Evaluation
+        with open(CRITERIA_PATH, 'r') as f: criteria = f.read()
+        eval_prompt = f"""Evaluate the paper based on these criteria: {criteria}. 
+        For S14 (WebGroundedUniqueness), gauge how saturated the topic is by reviewing this list of similar research:
+        {search_results}
+        Return ONLY a JSON object with keys S1-S13, S4b, S14, and S15. Each key must contain a nested object with 'score' (a number 0-10) and 'reason' (a concise 1-2 sentence explanation).
+        Paper Text: {text[:MAX_TEXT_TOKENS_FOR_LLM]}"""
+        
+        scores_json = client.chat.completions.create(
+            messages=[{"role": "user", "content": eval_prompt}], 
+            model=target_model, temperature=0, seed=SEED_NUMBER, response_format={"type": "json_object"}
+        ).choices[0].message.content
+        
+        return json.loads(scores_json)
+
+    # Execution with Smart Fallback
+    used_fallback = False
+    try:
+        # Try evaluating with the primary 70B model
+        scores_data = evaluate_with_model(PRIMARY_MODEL)
+    except RateLimitError:
+        # If RateLimit is hit, pause and switch to the Instant model
+        used_fallback = True
+        time.sleep(3) 
+        scores_data = evaluate_with_model(FALLBACK_MODEL)
     
     # Analytics
     score_keys = ['S1', 'S2', 'S3', 'S4', 'S4b', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12', 'S13', 'S15']
@@ -137,12 +160,11 @@ def process_paper(file_bytes, filename):
                  (file_hash, filename, pi, json.dumps(scores_data), datetime.now().isoformat()))
     conn.commit()
     
-    return pi, scores_data, False
+    return pi, scores_data, False, used_fallback
 
 # --- 4. STREAMLIT WEB UI ---
 st.title("🎓 Scholarπ (ScholarPi) System")
 st.subheader("Automated Multi-Criteria Academic Rigor Analytics")
-st.info("⚡ Powered by Groq Cloud Llama-3.3-70B")
 
 uploaded_file = st.file_uploader("Upload an Academic Paper (PDF)", type=["pdf"])
 
@@ -151,12 +173,15 @@ if uploaded_file is not None:
     
     if st.button("Run Full Evaluation Pipeline", type="primary"):
         with st.spinner("Analyzing text, parsing literature indices, and generating π-Index metrics..."):
-            pi, justifications, from_cache = process_paper(file_bytes, uploaded_file.name)
+            pi, justifications, from_cache, used_fallback = process_paper(file_bytes, uploaded_file.name)
             
         if from_cache:
             st.success("ℹ️ Retrieved evaluation metrics from persistent system cache.")
         else:
-            st.success("✅ Analysis completed successfully!")
+            if used_fallback:
+                st.warning(f"⚠️ Primary model rate limit reached. Evaluation completed successfully using fallback `{FALLBACK_MODEL}` model.")
+            else:
+                st.success(f"✅ Analysis completed successfully using `{PRIMARY_MODEL}`!")
 
         # High level score presentation
         st.metric(label="Calculated Final π-Index", value=f"{pi:.4f}")
