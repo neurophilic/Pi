@@ -277,7 +277,6 @@ def generate_interactive_bubble_chart(scope, user_id):
     df_topics = pd.DataFrame(all_topics)
     topic_counts = df_topics.groupby(['topic'])['weight'].sum().reset_index(name='weight')
     
-    # --- SAFETY CHECK ---
     if topic_counts.empty: return None, None
     
     unique_topics = topic_counts['topic'].unique()
@@ -289,17 +288,17 @@ def generate_interactive_bubble_chart(scope, user_id):
     
     color_map = {topic: get_color(i, len(unique_topics)) for i, topic in enumerate(unique_topics)}
     
-    net = Network(height='600px', width='100%', bgcolor='#ffffff', notebook=False)
+    net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
     
-    # --- PHYSICS: INCREASED GRAVITY/REDUCED SPACE ---
+    # --- TIGHTENED PHYSICS FOR OVERLAP ---
     physics_options = """
     {
       "physics": {
         "forceAtlas2Based": {
-          "gravitationalConstant": -50,
-          "centralGravity": 0.5,
-          "springLength": 10,
-          "avoidOverlap": 1.0
+          "gravitationalConstant": -20,
+          "centralGravity": 0.8,
+          "springLength": 1,
+          "avoidOverlap": 0
         },
         "solver": "forceAtlas2Based"
       }
@@ -308,21 +307,20 @@ def generate_interactive_bubble_chart(scope, user_id):
     net.set_options(physics_options)
     
     for _, row in topic_counts.iterrows():
-        # --- SIZE BY WEIGHT ---
-        node_size = 15 + (row['weight'] * 0.8) 
+        # Size tied to weight
+        node_size = 25 + (row['weight'] * 1.2) 
         
         net.add_node(
             n_id=row['topic'],
-            label="", # --- REMOVED LABEL ---
+            label=' ', # Forced whitespace to hide label
             title=f"Topic: {row['topic']} | Weight: {row['weight']}",
             size=node_size,
-            mass=node_size / 5,
+            mass=node_size / 2,
             color=color_map[row['topic']]
         )
         
     html_string = net.generate_html()
     
-    # Legend remains the same
     table_html = "<style>.table-big { width: 100%; font-size: 14px; border-collapse: collapse; margin-top: 10px; font-family: sans-serif; } .table-big th { background-color: #2c3e50; color: white; padding: 10px; text-align: left; } .table-big td { border-bottom: 1px solid #ddd; padding: 8px; vertical-align: middle; } .color-box { width: 18px; height: 18px; display: inline-block; border-radius: 3px; border: 1px solid #ccc; margin: 0 auto;} .legend-container { max-height: 550px; overflow-y: auto; border: 1px solid #eee; }</style>"
     table_html += "<div class='legend-container'><table class='table-big'><thead><tr><th style='width: 25%; text-align: center;'>Color</th><th>Topic</th></tr></thead><tbody>"
     
