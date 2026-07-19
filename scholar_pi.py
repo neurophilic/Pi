@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 import fitz  # PyMuPDF
-from groq import Groq, RateLimitError
+from groq import Groq
 from pyvis.network import Network
 
 # --- 1. CONFIGURATION & ENVIRONMENT ---
@@ -20,8 +20,7 @@ st.set_page_config(page_title="π-Index Assessment Engine", layout="wide")
 
 PRIMARY_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "llama-3.1-8b-instant"
-# Set to 32,000 to prevent groq.APIStatusError (Payload Too Large) while still capturing substantial text
-MAX_TEXT_TOKENS = 50000 
+MAX_TEXT_TOKENS = 32000  # Safe threshold to avoid "Payload Too Large" API errors
 SEED_NUMBER = 42
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
@@ -34,7 +33,7 @@ if not GROQ_API_KEY:
     st.stop()
 client = Groq(api_key=GROQ_API_KEY)
 
-# --- ORCID LIVE API VERIFICATION ---
+# --- UTILITY FUNCTIONS ---
 def verify_orcid_live(orcid_id):
     """Pings the real ORCID Public API to verify the ID and fetch the user's name."""
     try:
@@ -55,61 +54,18 @@ def verify_orcid_live(orcid_id):
     except Exception as e:
         return False, f"API Error: {str(e)}"
 
-# --- 2. SYSTEM ACCESS (ORCID INTEGRATION) ---
-st.sidebar.title("System Access")
-
-# Initialize session state for ORCID
-if 'orcid_id' not in st.session_state:
-    st.session_state.orcid_id = "0000-0000-0000-0000"
-    st.session_state.orcid_name = ""
-    st.session_state.is_authenticated = False
-
-if not st.session_state.is_authenticated:
-    st.sidebar.markdown("### Authenticate via ORCID")
-    st.sidebar.info("Connect your real ORCID iD to securely track your assessments and isolate your topological maps.")
-    
-    manual_orcid = st.sidebar.text_input("Enter ORCID iD", placeholder="XXXX-XXXX-XXXX-XXXX")
-    if st.sidebar.button("🔗 Validate & Connect via ORCID API"):
-        # Regex to validate standard 16-digit ORCID format
-        clean_orcid = manual_orcid.strip()
-        if re.match(r'^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$', clean_orcid):
-            with st.sidebar.status("Connecting to ORCID Registry..."):
-                is_valid, user_name = verify_orcid_live(clean_orcid)
-                
-            if is_valid:
-                st.session_state.orcid_id = clean_orcid
-                st.session_state.orcid_name = user_name
-                st.session_state.is_authenticated = True
-                st.rerun()
-            else:
-                st.sidebar.error(user_name) # Outputs the error message
-        else:
-            st.sidebar.error("Invalid format. Please use XXXX-XXXX-XXXX-XXXX")
-else:
-    st.sidebar.success("✅ Securely Connected")
-    st.sidebar.markdown(f"**Researcher:** {st.session_state.orcid_name}")
-    st.sidebar.markdown(f"**ORCID iD:** `{st.session_state.orcid_id}`")
-    if st.sidebar.button("Disconnect Session"):
-        st.session_state.is_authenticated = False
-        st.session_state.orcid_name = ""
-        st.rerun()
-
-current_user = st.session_state.orcid_id
-st.sidebar.caption("Assessment histories and maps are isolated to your ORCID, but the PoR blockchain remains globally synchronized.")
-
-# --- 3. PI PROGRESSION (EPOCH ACCURACY) ---
 def get_pi_float(block_height):
     pi_str = "3.141592653589793238462643383279502884197169399375105820974944592"
     length = min(block_height + 3, len(pi_str))
     return float(pi_str[:length])
 
-# --- 4. BLOCKCHAIN & DATABASE ---
 def validate_block_por(block_index, weights, timestamp, previous_hash, eval_hash, model_used):
     validator_node = "Validator_Pi_" + hashlib.md5(str(time.time()).encode()).hexdigest()[:6]
     data = f"{block_index}{weights}{timestamp}{previous_hash}{validator_node}{eval_hash}{model_used}".encode('utf-8')
     block_hash = hashlib.sha256(data).hexdigest()
     return validator_node, block_hash
 
+# --- 2. DATABASE & BLOCKCHAIN INIT ---
 @st.cache_resource
 def init_system():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -150,21 +106,38 @@ def init_system():
 
 conn = init_system()
 
-# --- 5. DYNAMIC WEIGHT ADAPTATION ---
+# --- 3. RECALCULATION ENGINE ---
+def recalculate_pi_indices():
+    cursor = conn.cursor()
+    # Get latest weights from the blockchain
+    cursor.execute("SELECT w1, w2, w3, w4, w5, w6, w7, w8 FROM blockchain_por_weights ORDER BY block_height DESC LIMIT 1")
+    weights = cursor.fetchone()
+    
+    # Get all stored assessments
+    cursor.execute("SELECT eval_hash, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment")
+    rows = cursor.fetchall()
+    
+    for row in rows:
+        eval_hash, *scores = row
+        # Recalculate based on current epoch weights
+        final_score = float(np.dot(scores, weights)) / 8.0
+        cursor.execute("UPDATE papers_assessment SET final_score = ? WHERE eval_hash = ?", (final_score, eval_hash))
+        
+    conn.commit()
+    st.toast("✅ Global π-Index values recalculated successfully against current epoch weights.")
+
+# --- 4. CORE ENGINE LOGIC ---
 def calculate_model_driven_weights(old_weights, scores, model_name, block_height):
     v, s = (3.3, 70.0) if "70b" in model_name else (3.1, 8.0)
     pi_acc = get_pi_float(block_height)
     delta_models = abs((3.3 * 70.0) - (3.1 * 8.0)) 
     
-    # 1. Apply a mathematical stretch to force variance from the mean
     mean_score = np.mean(scores)
     stretched_scores = [max(1.0, min(100.0, mean_score + (score - mean_score) * 3.0)) for score in scores]
     
     new_weights = []
     for i, old_w in enumerate(old_weights):
         c_score = stretched_scores[i]
-        
-        # 2. Exponentiate the score impact ((c_score/100)^2) to widen the distribution
         delta_w = ((v * s) / (delta_models * pi_acc)) * ((c_score / 100.0) ** 2)
         w_new = old_w * 0.85 + (1.0 + delta_w * 0.15) * 0.15
         new_weights.append(w_new)
@@ -172,14 +145,10 @@ def calculate_model_driven_weights(old_weights, scores, model_name, block_height
     sum_w = sum(new_weights)
     return [round((w / sum_w) * 8.0, 6) for w in new_weights]
 
-# --- 6. SEMANTIC EXTRACTION & DRIFT ---
 def evaluate_pdf_text(text, scope, model):
-    # Ensure text does not exceed the limit before sending
     if len(text) > MAX_TEXT_TOKENS:
-        st.warning(f"Paper length exceeds API limits. Truncating to {MAX_TEXT_TOKENS} tokens...")
         text = text[:MAX_TEXT_TOKENS]
 
-    # Strict instructions to isolate score from scope entirely
     prompt = f"""You are a brutally critical expert peer reviewer contributing to the π-Index.
 
 Evaluate the provided academic paper based PURELY on its own inherent absolute merit. Do NOT let any specific project scope influence your scoring of the 8 criteria (C1-C8).
@@ -198,26 +167,15 @@ Return ONLY a valid JSON object matching exactly this structure:
 }}
 Text: {text}
 """
-    try:
-        # LLM frozen with temperature 0.0 and explicit seed 42 to guarantee deterministic results
-        response = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model=model, 
-            temperature=0.0, 
-            seed=SEED_NUMBER, 
-            response_format={"type": "json_object"}
-        )
-        return json.loads(response.choices[0].message.content)
-        
-    except Exception as e:
-        st.error(f"API Error during extraction: {str(e)}")
-        # Return a fallback default structure to keep the app running instead of crashing
-        return {
-            "Extracted_Title": "Extraction Failed / Unreadable Document",
-            "Scope_Alignment": 0,
-            "scores": {k: 50.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]},
-            "fields": ["Unknown Field"], "subfields": ["Unknown Subfield"]
-        }
+    # LLM frozen with temperature 0.0 and explicit seed 42 to guarantee deterministic results
+    response = client.chat.completions.create(
+        messages=[{"role": "user", "content": prompt}],
+        model=model, 
+        temperature=0.0, 
+        seed=SEED_NUMBER, 
+        response_format={"type": "json_object"}
+    )
+    return json.loads(response.choices[0].message.content)
 
 def calculate_complex_drift(alignment, scores):
     mu, sigma = np.mean(scores), np.std(scores)
@@ -253,13 +211,19 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     # Extract all pages
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     text = " ".join([page.get_text() for page in doc]) 
-    model_used = PRIMARY_MODEL
+    
+    # Rate Limit & Error Handling Fallback
     try:
-        raw_data = evaluate_pdf_text(text, scope, model_used)
-    except RateLimitError:
-        time.sleep(2)
-        model_used = FALLBACK_MODEL
-        raw_data = evaluate_pdf_text(text, scope, model_used)
+        raw_data = evaluate_pdf_text(text, scope, PRIMARY_MODEL)
+        model_used = PRIMARY_MODEL
+    except Exception as e:
+        st.warning(f"Primary model hit a limit/error. Failing over to {FALLBACK_MODEL}...")
+        try:
+            raw_data = evaluate_pdf_text(text, scope, FALLBACK_MODEL)
+            model_used = FALLBACK_MODEL
+        except Exception as e2:
+            st.error(f"Both models failed. API Error: {str(e2)}")
+            return "Extraction Failed", 0.0, 0.0, "N/A", ["Unknown"], ["Unknown"], {k: 0.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]}
         
     # Increment and grab global evaluations
     cursor.execute("UPDATE global_eval_counter SET count = count + 1")
@@ -295,15 +259,13 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     conn.commit()
     return title, final_score, drift, get_recommendation_spectrum(final_score, drift), fields, subfields, scores_dict
 
-# --- 7. TOPOLOGICAL MAPPING (INTERACTIVE PYVIS NETWORK WITH WEIGHTS) ---
+# --- 5. TOPOLOGICAL MAPPING (INTERACTIVE PYVIS NETWORK) ---
 def generate_interactive_bubble_chart(scope, user_id):
     cursor = conn.cursor()
     cursor.execute("SELECT fields, subfields, final_score FROM papers_assessment WHERE scope=? AND user_id=?", (scope, user_id))
     data = cursor.fetchall()
     
-    # Initialize variables to avoid NameError if function exits early
     html_string, table_html = "", ""
-    
     if not data: return html_string, table_html
     
     all_topics = []
@@ -322,7 +284,6 @@ def generate_interactive_bubble_chart(scope, user_id):
     topic_counts = df_topics.groupby(['topic'])['weight'].sum().reset_index(name='weight')
     
     if topic_counts.empty: return html_string, table_html
-    
     unique_topics = topic_counts['topic'].unique()
     
     def get_color(i, n):
@@ -334,8 +295,6 @@ def generate_interactive_bubble_chart(scope, user_id):
     
     net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
     
-    # --- PHYSICS SET TO STOP JIGGLING ---
-    # --- PHYSICS SET TO CLUSTER WITH GRAVITY ---
     physics_options = """
     {
       "physics": {
@@ -358,19 +317,15 @@ def generate_interactive_bubble_chart(scope, user_id):
     
     for _, row in topic_counts.iterrows():
         node_size = 30 + (row['weight'] * 2.5) 
-        
         net.add_node(
             n_id=row['topic'],
             label=' ', 
             title=f"Topic: {row['topic']} | Weight: {row['weight']}",
             size=node_size,
-            # Removing mass prevents the engine from trying to "squish" 
-            # them based on mass, relying on size/overlap settings instead.
-            physics=True,  # Enable physics during stabilization
+            physics=True, 
             color=color_map[row['topic']]
         )
     
-    # Now iterating over a guaranteed defined topic_counts
     for _, row in topic_counts.iterrows():
         node_size = 30 + (row['weight'] * 2.5) 
         net.add_node(
@@ -384,7 +339,6 @@ def generate_interactive_bubble_chart(scope, user_id):
         
     html_string = net.generate_html()
     
-    # Table logic
     table_html = "<style>.table-big { width: 100%; font-size: 14px; border-collapse: collapse; margin-top: 10px; font-family: sans-serif; } .table-big th { background-color: #2c3e50; color: white; padding: 10px; text-align: left; } .table-big td { border-bottom: 1px solid #ddd; padding: 8px; vertical-align: middle; } .color-box { width: 18px; height: 18px; display: inline-block; border-radius: 3px; border: 1px solid #ccc; margin: 0 auto;} .legend-container { max-height: 550px; overflow-y: auto; border: 1px solid #eee; }</style>"
     table_html += "<div class='legend-container'><table class='table-big'><thead><tr><th style='width: 25%; text-align: center;'>Color</th><th>Topic</th></tr></thead><tbody>"
     
@@ -395,7 +349,46 @@ def generate_interactive_bubble_chart(scope, user_id):
     
     return html_string, table_html
 
-# --- 8. USER INTERFACE ---
+# --- 6. USER INTERFACE ---
+st.sidebar.title("System Access")
+
+if 'orcid_id' not in st.session_state:
+    st.session_state.orcid_id = "0000-0000-0000-0000"
+    st.session_state.orcid_name = ""
+    st.session_state.is_authenticated = False
+
+if not st.session_state.is_authenticated:
+    st.sidebar.markdown("### Authenticate via ORCID")
+    st.sidebar.info("Connect your real ORCID iD to securely track your assessments and isolate your topological maps.")
+    
+    manual_orcid = st.sidebar.text_input("Enter ORCID iD", placeholder="XXXX-XXXX-XXXX-XXXX")
+    if st.sidebar.button("🔗 Validate & Connect via ORCID API"):
+        clean_orcid = manual_orcid.strip()
+        if re.match(r'^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$', clean_orcid):
+            with st.sidebar.status("Connecting to ORCID Registry..."):
+                is_valid, user_name = verify_orcid_live(clean_orcid)
+                
+            if is_valid:
+                st.session_state.orcid_id = clean_orcid
+                st.session_state.orcid_name = user_name
+                st.session_state.is_authenticated = True
+                st.rerun()
+            else:
+                st.sidebar.error(user_name)
+        else:
+            st.sidebar.error("Invalid format. Please use XXXX-XXXX-XXXX-XXXX")
+else:
+    st.sidebar.success("✅ Securely Connected")
+    st.sidebar.markdown(f"**Researcher:** {st.session_state.orcid_name}")
+    st.sidebar.markdown(f"**ORCID iD:** `{st.session_state.orcid_id}`")
+    if st.sidebar.button("Disconnect Session"):
+        st.session_state.is_authenticated = False
+        st.session_state.orcid_name = ""
+        st.rerun()
+
+current_user = st.session_state.orcid_id
+st.sidebar.caption("Assessment histories and maps are isolated to your ORCID, but the PoR blockchain remains globally synchronized.")
+
 st.title("π-Index Assessment Engine")
 st.markdown("**Upload papers, define your scope of research, let π-index filter noise and have better results**")
 
@@ -428,18 +421,16 @@ with tab1:
     uploaded_files = st.file_uploader("Upload Academic Papers (PDFs)", type=["pdf"], accept_multiple_files=True)
     
     if st.button("Run Batch Assessment", type="primary"):
-        # --- ERROR HANDLING ---
         if not research_scope.strip():
             st.warning("⚠️ Please define a Research Topic / Scope before running the assessment.")
         elif not uploaded_files:
             st.warning("⚠️ Please upload at least one academic paper (PDF) to proceed.")
         else:
-            # --- CACHE CLEARED UPON NEW UPLOAD BATCH ---
+            # Clear user's bubble cache before processing new batch
             cursor = conn.cursor()
             cursor.execute("DELETE FROM papers_assessment WHERE user_id=?", (current_user,))
             conn.commit()
 
-            # --- EXECUTION ---
             results = []
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -447,12 +438,10 @@ with tab1:
             for i, file in enumerate(uploaded_files):
                 status_text.text(f"Analyzing {i+1} of {len(uploaded_files)}: {file.name}...")
                 
-                # Logic execution
                 title, score, drift, rec, fields, subfields, scores_dict = process_single_pdf(
                     file.read(), file.name, research_scope, current_user
                 )
                 
-                # Appending data...
                 combined_fields = f"Fields: {', '.join(fields)} | Subfields: {', '.join(subfields)}"
                 results.append({
                     "No.": i + 1,
@@ -475,7 +464,6 @@ with tab1:
                 
             status_text.text("Batch processing complete!")
             
-            # Rendering Results
             df = pd.DataFrame(results)
             df_display = df.sort_values(by=["π-Index (0-100)"], ascending=False)
             st.markdown("### Assessment Summary")
@@ -484,12 +472,10 @@ with tab1:
             csv = df_display.to_csv(index=False).encode('utf-8')
             st.download_button(label="Download Summary as CSV", data=csv, file_name="pi_index_assessment_results.csv", mime="text/csv")
 
-    # --- Display History below the form ---
     st.markdown("---")
     st.markdown("### Latest Assessment History")
     
     if st.session_state.is_authenticated:
-        # Fetch and display history
         cursor = conn.cursor()
         cursor.execute("SELECT title, scope, final_score, timestamp, eval_hash FROM papers_assessment WHERE user_id=? ORDER BY timestamp DESC LIMIT 20", (current_user,))
         history_data = cursor.fetchall()
@@ -501,7 +487,6 @@ with tab1:
             st.info("No assessment history found for your account.")
     else:
         st.warning("🔒 Please connect your ORCID iD in the sidebar to view your private assessment history.")
-        
 
 with tab2:
     st.subheader("Field & Subfield Epistemic Bubbles")
@@ -586,6 +571,13 @@ with tab3:
             cursor.execute("SELECT block_height, timestamp, model_used, block_hash FROM blockchain_por_weights ORDER BY block_height DESC LIMIT 10")
             df_blocks = pd.DataFrame(cursor.fetchall(), columns=["Height", "Timestamp", "Model", "Block Hash"])
             st.dataframe(df_blocks, use_container_width=True, hide_index=True)
+            
+        st.markdown("---")
+        st.markdown("### Advanced Utilities")
+        if st.button("🔄 Recalculate Global π-Index"):
+            with st.spinner("Re-evaluating historical papers against current epoch weights..."):
+                recalculate_pi_indices()
+                st.rerun()
 
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
