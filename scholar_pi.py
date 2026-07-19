@@ -1,6 +1,4 @@
-Here is the complete, fully updated project code. The file incorporates the mathematical variance adjustments for the weights, the strict LLM prompt for a broader criteria distribution, and the corrected interactive bubble chart with the simplified Color/Topic legend.
 
-```python
 import os
 import sqlite3
 import json
@@ -554,4 +552,4 @@ with tab3:
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
 
-```
+
