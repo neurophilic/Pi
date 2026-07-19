@@ -27,7 +27,8 @@ SEED_NUMBER = 42
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
 os.makedirs(BASE_DIR, exist_ok=True)
-DB_PATH = os.path.join(BASE_DIR, 'pi_index_assessment_v12_por.db')
+# Updated DB version to accommodate new logic_score column
+DB_PATH = os.path.join(BASE_DIR, 'pi_index_assessment_v13_por.db')
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 if not GROQ_API_KEY:
@@ -76,7 +77,7 @@ def init_system():
                       (eval_hash TEXT PRIMARY KEY, user_id TEXT, title TEXT, filename TEXT, scope TEXT,
                        c1 REAL, c2 REAL, c3 REAL, c4 REAL, 
                        c5 REAL, c6 REAL, c7 REAL, c8 REAL, 
-                       scope_alignment REAL,
+                       logic_score REAL, scope_alignment REAL,
                        subfields TEXT, fields TEXT, final_score REAL, timestamp DATETIME)''')
                        
     cursor.execute('''CREATE TABLE IF NOT EXISTS blockchain_por_weights 
@@ -127,14 +128,32 @@ def calculate_model_driven_weights(old_weights, scores, model_name, block_height
     sum_w = sum(new_weights)
     return [round((w / sum_w) * 8.0, 6) for w in new_weights]
 
+def compute_logical_integrity(v):
+    """
+    Calculates the Logical Integrity Gap.
+    If the author concludes something (Conclusion_Reach) that isn't 
+    supported by the evidence, the score drops exponentially.
+    """
+    e_str = v.get('Evidence_Strength', 0.5)
+    c_reach = v.get('Conclusion_Reach', 0.5)
+    jumps = v.get('Logical_Jumps', 0.5)
+    p_valid = v.get('Premise_Validity', 0.5)
+    
+    # Mathematical Gap: The distance between evidence and conclusion
+    # We heavily penalize the paper if Conclusion_Reach > Evidence_Strength
+    gap = max(0.0, c_reach - e_str)
+    
+    # Final Logic Score = (Validity * Evidence) * penalty for gaps and jumps
+    logic_score = (p_valid * e_str) * np.exp(-(gap * 2.0 + jumps * 1.5)) * 100
+    
+    return max(0.0, min(100.0, logic_score))
+
 def compute_formulaic_criteria(v):
     """
     Computes RAW CRITERIA SCORES (0-100) using Python translations of the LaTeX formulas.
-    Note: Blockchain Weights (w) are NOT applied here. They are applied via dot product in the final score.
     """
     scores = {}
     
-    # Safely extract variables with extreme fail-safes
     H_novel, K_epi = v.get('H_novel', 0.5), v.get('K_epistemic', 0.5)
     zeta, I_ex = v.get('zeta', 0.5), v.get('I_existing', 0.5)
     Sigma_err, mu_sig = v.get('Sigma_error', 0.2), v.get('mu_signal', 0.8)
@@ -150,43 +169,41 @@ def compute_formulaic_criteria(v):
     sum_lam = v.get('sum_lambda_kappa', 1.0)
     eta, Lambda = v.get('eta_steps', 2.0), v.get('Lambda_Lyapunov', 0.5)
 
-    # C1: Originality (Gradient/Curl estimation cross-product over existing integral)
+    # C1: Originality 
     c1_raw = ((H_novel * K_epi) / (zeta * I_ex + 0.1)) * 60
     scores["C1_Originality"] = min(100.0, max(0.0, c1_raw))
     
-    # C2: Methodological Rigor (Error Covariance mapping with Gamma integration)
-    gamma_val = math.gamma(1.5) # Constant proxy for structural depth integration
+    # C2: Methodological Rigor 
+    gamma_val = math.gamma(1.5) 
     rigor_matrix = max(0.0, 1.0 - (Sigma_err / (mu_sig + 0.1)))
     c2_raw = rigor_matrix * rho_k * gamma_val * 140
     scores["C2_Methodological_Rigor"] = min(100.0, max(0.0, c2_raw))
     
-    # C3: Interdisciplinary (Generalized Rényi entropy + Bridge Capacity)
+    # C3: Interdisciplinary 
     p_disc = p_disc / (p_disc.sum() + 1e-9)
-    renyi = -np.log(np.sum(p_disc**2) + 1e-9) # alpha=2 Collision Entropy
+    renyi = -np.log(np.sum(p_disc**2) + 1e-9) 
     c3_raw = (renyi + bridge_cap) * 55
     scores["C3_Interdisciplinary"] = min(100.0, max(0.0, c3_raw))
     
-    # C4: Societal Impact (Fractional stochastic integration)
+    # C4: Societal Impact 
     gamma_q = math.gamma(max(0.1, q_frac))
     c4_raw = (1.0 / gamma_q) * Utility * np.exp(-decay) * 150
     scores["C4_Societal_Impact"] = min(100.0, max(0.0, c4_raw))
     
-    # C5: Open Science Potential (Multi-objective integration scaling)
-    # Scaled to 100. P_FAIR heavily influences the outcome.
+    # C5: Open Science Potential 
     c5_raw = ((0.7 * D_open) + (0.3 * J_code)) * P_FAIR * 180
     scores["C5_Open_Science_Potential"] = min(100.0, max(0.0, c5_raw))
     
-    # C6: Literature Integration (Non-Euclidean PageRank mapping)
+    # C6: Literature Integration 
     c6_raw = np.exp(-1.5 * d_g) * R_xi * PR_xi * 180
     scores["C6_Literature_Integration"] = min(100.0, max(0.0, c6_raw))
     
-    # C7: Empirical Density (Fisher information hyperbolic scaling)
+    # C7: Empirical Density 
     density_inner = (I_Fish * KL_div) / (V_base * omega + 0.1)
     c7_raw = np.tanh(density_inner) * sum_lam * 80
     scores["C7_Empirical_Density"] = min(100.0, max(0.0, c7_raw))
     
-    # C8: Future Actionability (Lyapunov exponents trajectory continuation via Sigmoid)
-    # eta is 1-5, Lambda is 0-1. We scale Lambda so they interact in the sigmoid bounds.
+    # C8: Future Actionability 
     c8_raw = (1.0 / (1.0 + np.exp(-(eta - (Lambda * 5))))) * 100
     scores["C8_Future_Actionability"] = min(100.0, max(0.0, c8_raw))
     
@@ -208,7 +225,7 @@ CRITICAL INSTRUCTION - FORCE EXTREME VARIANCE:
 Do NOT cluster your variables around 0.5. If a paper is weak or standard, use values between 0.0 and 0.3. If exceptional, use 0.8 to 1.0. 
 Failure to create extreme contrast will break the mathematical formulas.
 
-Extract these exact variables (all values must be floats between 0.0 and 1.0, unless specified otherwise):
+1. Extracted Variables (all values must be floats between 0.0 and 1.0, unless specified):
 - `H_novel`: Conceptual novelty (0.1 = derivative, 0.9 = groundbreaking).
 - `K_epistemic`: Paradigm shift potential.
 - `zeta`: Reliance on existing works (0.9 = heavily reliant, 0.1 = independent/new).
@@ -235,6 +252,13 @@ Extract these exact variables (all values must be floats between 0.0 and 1.0, un
 - `eta_steps`: Number of concrete actionable future steps identified (Integer 1 to 5).
 - `Lambda_Lyapunov`: Trajectory divergence (0.1 = highly predictable continuation, 0.9 = chaotic/disruptive).
 
+2. Adversarial Logic Mapping:
+Identify logical structural flaws and gaps in reasoning:
+- `Evidence_Strength`: (0.1 = Anecdotal/Weak, 0.9 = Robust/Repetitive).
+- `Conclusion_Reach`: (0.1 = Conservative/Supported, 0.9 = Wild/Unsupported).
+- `Logical_Jumps`: (0.1 = Highly logical flow, 0.9 = Major non-sequiturs).
+- `Premise_Validity`: (0.1 = Questionable assumptions, 0.9 = Solid definitions).
+
 {scope_instruction}
 
 Return ONLY a valid JSON object matching exactly this structure:
@@ -247,6 +271,9 @@ Return ONLY a valid JSON object matching exactly this structure:
         "D_open": 0.2, "J_code": 0.1, "P_FAIR": 0.3, "d_g_distance": 0.2, "R_xi": 0.9, "PR_xi": 0.8,
         "I_Fisher": 0.8, "KL_divergence": 0.7, "V_baseline": 0.4, "omega_data": 0.8, "sum_lambda_kappa": 1.1,
         "eta_steps": 3, "Lambda_Lyapunov": 0.4
+    }},
+    "logic_analysis": {{
+        "Evidence_Strength": 0.8, "Conclusion_Reach": 0.5, "Logical_Jumps": 0.1, "Premise_Validity": 0.9
     }},
     "fields": ["Field1", "Field2"], 
     "subfields": ["Subfield1"]
@@ -280,11 +307,11 @@ def get_recommendation_spectrum(score, drift):
 def process_single_pdf(file_bytes, filename, scope, user_id):
     file_hash = hashlib.sha256(file_bytes + user_id.encode('utf-8')).hexdigest()
     cursor = conn.cursor()
-    cursor.execute("SELECT final_score, scope_alignment, title, fields, subfields, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment WHERE eval_hash=? AND user_id=?", (file_hash, user_id))
+    cursor.execute("SELECT final_score, scope_alignment, logic_score, title, fields, subfields, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment WHERE eval_hash=? AND user_id=?", (file_hash, user_id))
     cached = cursor.fetchone()
     
     if cached:
-        score, alignment, title, fields_str, subfields_str, c1, c2, c3, c4, c5, c6, c7, c8 = cached
+        score, alignment, logic_score, title, fields_str, subfields_str, c1, c2, c3, c4, c5, c6, c7, c8 = cached
         fields = json.loads(fields_str) if fields_str else ["General Science"]
         subfields = json.loads(subfields_str) if subfields_str else ["General"]
         scores_array = [c1, c2, c3, c4, c5, c6, c7, c8]
@@ -293,7 +320,7 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
         rec = get_recommendation_spectrum(score, drift) if scope.strip() else "N/A"
         scores_dict = {"C1_Originality": c1, "C2_Methodological_Rigor": c2, "C3_Interdisciplinary": c3, "C4_Societal_Impact": c4, "C5_Open_Science_Potential": c5, "C6_Literature_Integration": c6, "C7_Empirical_Density": c7, "C8_Future_Actionability": c8}
         
-        return title, score, drift, rec, fields, subfields, scores_dict
+        return title, score, logic_score, drift, rec, fields, subfields, scores_dict
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     text = " ".join([page.get_text() for page in doc]) 
@@ -309,7 +336,7 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
             model_used = FALLBACK_MODEL
         except Exception as e2:
             st.error(f"Both models failed. API Error: {str(e2)}")
-            return "Extraction Failed", 0.0, "N/A", "N/A", ["Unknown"], ["Unknown"], {k: 0.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]}
+            return "Extraction Failed", 0.0, 0.0, "N/A", "N/A", ["Unknown"], ["Unknown"], {k: 0.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]}
         
     cursor.execute("UPDATE global_eval_counter SET count = count + 1")
     cursor.execute("SELECT count FROM global_eval_counter")
@@ -319,12 +346,16 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     epoch_data = cursor.fetchone()
     block_height, previous_hash, old_weights = epoch_data[0], epoch_data[1], epoch_data[2:]
     
-    # 1. MATHEMATICAL COMPUTATION (Applies LaTeX formulas via Python)
+    # 1. MATHEMATICAL COMPUTATION (Criteria Variables)
     variables = raw_data.get("variables", {})
     scores_dict = compute_formulaic_criteria(variables)
     scores = [scores_dict[k] for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]]
     
-    # 2. BLOCKCHAIN EPOCH UPDATES (Applies Weight Scaling)
+    # 2. ADVERSARIAL LOGIC COMPUTATION
+    logic_vars = raw_data.get("logic_analysis", {})
+    logic_integrity = compute_logical_integrity(logic_vars)
+
+    # 3. BLOCKCHAIN EPOCH UPDATES (Applies Weight Scaling)
     if total_evals % 10 == 0:
         new_weights = calculate_model_driven_weights(old_weights, scores, model_used, block_height)
         timestamp = datetime.now().isoformat()
@@ -339,16 +370,19 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     fields, subfields = raw_data.get("fields", ["General Science"]), raw_data.get("subfields", ["General"])
     
     # Final Score computation uses the Dot Product of mathematical scores and dynamic blockchain weights
-    final_score = float(np.dot(scores, new_weights)) / 8.0
+    raw_final_score = float(np.dot(scores, new_weights)) / 8.0
+    
+    # Apply Logical Integrity as a structural modifier (Up to a 30% penalty if logic is flawed)
+    final_score = float(raw_final_score * (0.7 + (logic_integrity / 333.3)))
     
     drift = calculate_complex_drift(scope_alignment, scores) if scope.strip() else "N/A"
     rec = get_recommendation_spectrum(final_score, drift) if scope.strip() else "N/A"
     
     timestamp = datetime.now().isoformat()
-    cursor.execute('''INSERT INTO papers_assessment (eval_hash, user_id, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, scope_alignment, subfields, fields, final_score, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                   (file_hash, user_id, title, filename, scope, *scores, scope_alignment, json.dumps(subfields), json.dumps(fields), final_score, timestamp))
+    cursor.execute('''INSERT INTO papers_assessment (eval_hash, user_id, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, logic_score, scope_alignment, subfields, fields, final_score, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                   (file_hash, user_id, title, filename, scope, *scores, logic_integrity, scope_alignment, json.dumps(subfields), json.dumps(fields), final_score, timestamp))
     conn.commit()
-    return title, final_score, drift, rec, fields, subfields, scores_dict
+    return title, final_score, logic_integrity, drift, rec, fields, subfields, scores_dict
 
 # --- 4. TOPOLOGICAL MAPPING (INTERACTIVE PYVIS NETWORK) ---
 def generate_interactive_bubble_chart(scope, user_id):
@@ -484,7 +518,13 @@ st.title("π-Index Assessment Engine")
 st.markdown("**Upload papers, define your scope of research, let π-index filter noise and have better results**")
 
 with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
-    st.markdown("### Evaluation Metrics (0 - 100 Scale)")
+    st.markdown("### Evaluation Metrics & Adversarial Logic Engine")
+    st.markdown("""
+    **Adversarial Logic Gap ($\Delta_{Logic}$):** Before a final score is validated, the system maps the paper's reasoning structure. It penalizes the paper exponentially if the author's conclusions overreach the provided evidence.
+    $$ L_i = \left( \mathcal{P}_{valid} \cdot \mathcal{E}_{strength} \right) \cdot \exp\left(-\left(2 \cdot \max(0, \mathcal{C}_{reach} - \mathcal{E}_{strength}) + 1.5 \cdot \lambda_{jumps}\right)\right) \times 100 $$
+    """)
+    st.markdown("---")
+    
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**C1: Originality**\nEvaluates uniqueness through epistemic gradient fields.")
@@ -526,7 +566,7 @@ with tab1:
             for i, file in enumerate(uploaded_files):
                 status_text.text(f"Analyzing {i+1} of {len(uploaded_files)}: {file.name}...")
                 
-                title, score, drift, rec, fields, subfields, scores_dict = process_single_pdf(
+                title, score, logic_integrity, drift, rec, fields, subfields, scores_dict = process_single_pdf(
                     file.read(), file.name, research_scope, current_user
                 )
                 
@@ -536,6 +576,7 @@ with tab1:
                     "No.": i + 1,
                     "File Name": file.name,
                     "Fields & Subfields": combined_fields,
+                    "Logic Integrity (%)": round(logic_integrity, 1),
                     "π-Index (0-100)": round(score, 1),
                 }
                 
