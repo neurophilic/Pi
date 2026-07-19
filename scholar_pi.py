@@ -294,54 +294,45 @@ def generate_interactive_bubble_chart(scope, user_id):
     
     df_topics = pd.DataFrame(all_topics)
     topic_counts = df_topics.groupby(['topic', 'category']).size().reset_index(name='count')
-    topic_counts = topic_counts.sort_values(by='count', ascending=False).reset_index(drop=True)
     
-    max_count = topic_counts['count'].max()
-    min_size = 25
-    max_size = 85
-    topic_counts['bubble_size'] = min_size + (topic_counts['count'] / max_count) * (max_size - min_size)
+    # Assign specific colors to categories
+    category_colors = {'Field': '#FF5733', 'Subfield': '#33FF57'} 
     
-    # Initialize physics-enabled Network
     net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
     
-    # Corrected Physics Configuration
+    # Enable the legend in the options
     physics_options = """
     {
+      "nodes": { "font": {"size": 16} },
       "physics": {
-        "forceAtlas2Based": {
-          "gravitationalConstant": -80,
-          "centralGravity": 0.01,
-          "springLength": 100,
-          "springConstant": 0.08,
-          "damping": 0.4,
-          "avoidOverlap": 0.5
-        },
-        "minVelocity": 0.75,
+        "forceAtlas2Based": { "gravitationalConstant": -80, "avoidOverlap": 0.5 },
         "solver": "forceAtlas2Based"
-      }
+      },
+      "configure": { "enabled": false }
     }
     """
     net.set_options(physics_options)
     
-    color_palette = px.colors.qualitative.Bold + px.colors.qualitative.Pastel + px.colors.qualitative.Vivid
-    
     for i, row in topic_counts.iterrows():
+        # Assign color based on category
+        color = category_colors.get(row['category'], '#007bff')
         net.add_node(
             n_id=row['topic'],
-            label=" ",
-            title=f"{row['topic']}<br>Category: {row['category']}<br>Focus Frequency: {row['count']}",
-            size=row['bubble_size'],
-            color=color_palette[i % len(color_palette)],
-            shape='dot'
+            label=row['topic'], # Added label back so it's readable
+            title=f"Category: {row['category']}<br>Frequency: {row['count']}",
+            size=25 + (row['count'] * 5),
+            color=color,
+            group=row['category'] # 'group' automatically creates a legend in pyvis
         )
         
+    # This force enables the legend/grouping
+    net.show_buttons(filter_=['physics'])
+    
     with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp_file:
         net.save_graph(tmp_file.name)
         html_string = open(tmp_file.name, 'r', encoding='utf-8').read()
         
     return html_string, topic_counts
-    
-
 
 # --- 8. USER INTERFACE ---
 st.title("π-Index Assessment Engine")
