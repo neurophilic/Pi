@@ -1,4 +1,3 @@
-
 import os
 import sqlite3
 import json
@@ -145,7 +144,7 @@ def calculate_pi_index(base_scores, uniqueness_score_10pt, delta_t=0):
     u_multiplier = Decimal('0.5') + (Decimal(str(u_score)) * Decimal('0.5'))
     
     raw_pi = float(Decimal(str(avg_score)) * drift * u_multiplier)
-    return round(raw_pi, 1)  # <-- Forces the final score to strictly 1 decimal place
+    return round(raw_pi, 1)
 
 # --- 4. CORE PROCESSING FUNCTIONS ---
 def process_paper(file_bytes, filename):
@@ -178,8 +177,17 @@ def process_paper(file_bytes, filename):
         except:
             pass
 
+        # --- DYNAMIC FEW-SHOT LEARNING (IN-CONTEXT TRAINING) ---
+        cursor.execute("SELECT justifications FROM papers ORDER BY timestamp DESC LIMIT 1")
+        last_paper = cursor.fetchone()
+        
+        teaching_example = ""
+        if last_paper:
+            teaching_example = f"\n\n--- LEARNING FROM PAST DATA ---\nHere is exactly how you successfully extracted variables from the previous paper. Use this as a structural guide for your formatting:\n{last_paper[0]}\n-------------------------------\n"
+
         # PROMPT: Asking for Variables instead of Scores
         eval_prompt = f"""Read the following academic text. Extract the specific variables required for our algorithmic scoring system.
+        {teaching_example}
         Return ONLY a JSON object exactly matching this structure, along with a 1-sentence 'reason' explaining your findings for each section:
         {{
             "S1": {{"vocab_level_1_to_5": int, "sentence_complexity_1_to_5": int, "reason": str}},
@@ -226,6 +234,7 @@ def process_paper(file_bytes, filename):
     
     pi = calculate_pi_index(base_score_list, uniqueness_s14)
     
+    # We save the *raw AI data variables*, not just the calculated scores, so the AI can learn from its exact output structure
     conn.execute("INSERT OR REPLACE INTO papers (file_hash, filename, pi_index, justifications, timestamp) VALUES (?,?,?,?,?)",
                  (file_hash, filename, pi, json.dumps(final_scores_data), datetime.now().isoformat()))
     conn.commit()
@@ -249,9 +258,8 @@ if uploaded_file is not None:
             st.success("ℹ️ Retrieved calculated metrics from cache.")
         else:
             model_used = FALLBACK_MODEL if used_fallback else PRIMARY_MODEL
-            st.success(f"✅ Algorithms executed successfully via `{model_used}` data extraction!")
+            st.success(f"✅ Algorithms executed successfully via `{model_used}` data extraction! AI successfully applied historical learnings.")
 
-        # <-- Ensures the web app also formats it cleanly to 1 decimal place
         st.metric(label="Calculated Final π-Index", value=f"{pi:.1f}") 
         
         st.markdown("### Algorithmic Evaluation Matrix")
