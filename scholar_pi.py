@@ -1,10 +1,4 @@
-Here is the complete, updated code!
 
-To make sure the final **π-Index** always outputs as a single decimal (like `5.7`), I have added a `round(raw_pi, 1)` command to the calculation function and updated the visual display setting in the user interface to `f"{pi:.1f}"`.
-
-### Copy and paste this into your `app.py`:
-
-```python
 import os
 import sqlite3
 import json
