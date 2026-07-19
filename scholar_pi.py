@@ -293,20 +293,19 @@ def generate_interactive_bubble_chart(scope, user_id):
     net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
     
     # --- PHYSICS SET TO STOP JIGGLING ---
+    # 1. Physics set to stabilize and then stop
     physics_options = """
     {
       "physics": {
         "forceAtlas2Based": {
           "gravitationalConstant": -50,
-          "centralGravity": 0.2,
+          "centralGravity": 0.01,
           "springLength": 10,
-          "avoidOverlap": 0
+          "avoidOverlap": 1.0
         },
         "stabilization": {
           "enabled": true,
-          "iterations": 1000,
-          "updateInterval": 25,
-          "onlyDynamicEdges": false,
+          "iterations": 200,
           "fit": true
         },
         "solver": "forceAtlas2Based"
@@ -314,6 +313,19 @@ def generate_interactive_bubble_chart(scope, user_id):
     }
     """
     net.set_options(physics_options)
+    
+    for _, row in topic_counts.iterrows():
+        node_size = 30 + (row['weight'] * 2.5) 
+        
+        net.add_node(
+            n_id=row['topic'],
+            label=' ', 
+            title=f"Topic: {row['topic']} | Weight: {row['weight']}",
+            size=node_size,
+            mass=node_size / 2,
+            physics=False,  # <--- DISABLE PHYSICS FOR INDIVIDUAL NODES
+            color=color_map[row['topic']]
+        )
     
     # Now iterating over a guaranteed defined topic_counts
     for _, row in topic_counts.iterrows():
