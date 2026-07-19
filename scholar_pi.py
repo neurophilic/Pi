@@ -1,9 +1,22 @@
+Using the ORCID iD is a fantastic idea for a scientometric tool like this.
+
+**My Recommendation on Hashing:**
+**Yes, you absolutely should include the ORCID iD in the evaluation hash.**
+
+Here is why: The `eval_hash` is used as the **Primary Key** in your database for storing the paper's assessment. If Researcher A and Researcher B both upload the exact same paper and use the exact same scope string, omitting the user ID would result in the exact same hash. Researcher B would accidentally overwrite Researcher A's assessment in the database.
+
+By including the ORCID iD in the SHA-256 generation, you ensure the hash is **cryptographically unique to the researcher**, avoiding database collisions. Furthermore, because SHA-256 is a one-way function, the ORCID remains pseudonymous and private when the hash is published to the global Proof-of-Stake blockchain ledger.
+
+Here is the updated code. I have implemented a realistic ORCID connection interface in the sidebar using Streamlit's `session_state`. It includes a mock "OAuth Connect" button (which simulates a real API handshake) alongside a manual entry fallback with regular expression (Regex) validation to ensure the ID matches the official ORCID format (`XXXX-XXXX-XXXX-XXXX`).
+
+```python
 import os
 import sqlite3
 import json
 import hashlib
 import time
 import tempfile
+import re
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
@@ -33,10 +46,45 @@ if not GROQ_API_KEY:
     st.stop()
 client = Groq(api_key=GROQ_API_KEY)
 
-# --- 2. SYSTEM ACCESS (USER SIMULATION) ---
+# --- 2. SYSTEM ACCESS (ORCID INTEGRATION) ---
 st.sidebar.title("System Access")
-current_user = st.sidebar.text_input("Researcher ID", value="researcher_01")
-st.sidebar.caption("Switch IDs to simulate different users. Assessment histories and maps are isolated, but the PoS blockchain remains global.")
+
+# Initialize session state for ORCID
+if 'orcid_id' not in st.session_state:
+    st.session_state.orcid_id = "0000-0000-0000-0000"
+    st.session_state.is_authenticated = False
+
+if not st.session_state.is_authenticated:
+    st.sidebar.markdown("### Authenticate via ORCID")
+    st.sidebar.info("Connect your ORCID iD to securely track your assessments and isolate your topological maps.")
+    
+    # Simulated OAuth flow
+    if st.sidebar.button("🔗 Connect ORCID (Mock OAuth)"):
+        # In a production environment, this would redirect to ORCID's OAuth2 authorization URL.
+        # For this prototype, we simulate a successful login with a mock ORCID.
+        st.session_state.orcid_id = "0000-0002-1825-0097" 
+        st.session_state.is_authenticated = True
+        st.rerun()
+        
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Or link manually:**")
+    manual_orcid = st.sidebar.text_input("ORCID iD", placeholder="XXXX-XXXX-XXXX-XXXX")
+    if st.sidebar.button("Link ID"):
+        # Regex to validate standard 16-digit ORCID format (last digit can be 'X')
+        if re.match(r'^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$', manual_orcid.strip()):
+            st.session_state.orcid_id = manual_orcid.strip()
+            st.session_state.is_authenticated = True
+            st.rerun()
+        else:
+            st.sidebar.error("Invalid format. Please use XXXX-XXXX-XXXX-XXXX")
+else:
+    st.sidebar.success(f"✅ Connected: {st.session_state.orcid_id}")
+    if st.sidebar.button("Disconnect"):
+        st.session_state.is_authenticated = False
+        st.rerun()
+
+current_user = st.session_state.orcid_id
+st.sidebar.caption("Assessment histories and maps are isolated to your ORCID, but the PoS blockchain remains globally synchronized.")
 
 # --- 3. PI PROGRESSION (EPOCH ACCURACY) ---
 def get_pi_float(block_height):
@@ -57,7 +105,7 @@ def init_system():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
-    # Added user_id to isolate user data
+    # user_id stores the ORCID to isolate user data
     cursor.execute('''CREATE TABLE IF NOT EXISTS papers_assessment 
                       (eval_hash TEXT PRIMARY KEY, user_id TEXT, title TEXT, filename TEXT, scope TEXT,
                        c1 REAL, c2 REAL, c3 REAL, c4 REAL, 
@@ -162,7 +210,7 @@ def get_recommendation_spectrum(score, drift):
     else: return "Tier VI: Orthogonal / Unrelated Noise"
 
 def process_single_pdf(file_bytes, filename, scope, user_id):
-    # Hash includes user_id to isolate records
+    # Hash includes user_id (ORCID) to cryptographically isolate user records and prevent PK collisions
     file_hash = hashlib.sha256(file_bytes + scope.encode('utf-8') + user_id.encode('utf-8')).hexdigest()
     
     cursor = conn.cursor()
@@ -226,7 +274,7 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     final_score = float(np.dot(scores, new_weights)) / 8.0
     drift = calculate_complex_drift(scope_alignment, scores)
     
-    # Save assessment specific to the user
+    # Save assessment specific to the user ORCID
     cursor.execute('''INSERT INTO papers_assessment 
                       (eval_hash, user_id, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, scope_alignment, subfields, fields, final_score, timestamp) 
                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
@@ -237,14 +285,20 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     
     return title, final_score, drift, get_recommendation_spectrum(final_score, drift), fields, subfields, scores_dict
 
+# --- Helper for Transparent Colors ---
+def hex_to_rgba(hex_color, alpha=0.6):
+    hex_color = hex_color.lstrip('#')
+    r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    return f'rgba({r}, {g}, {b}, {alpha})'
+
 # --- 7. TOPOLOGICAL MAPPING (INTERACTIVE PYVIS NETWORK) ---
 def generate_interactive_bubble_chart(scope, user_id):
     cursor = conn.cursor()
-    # Scope Cartography now isolates based on the logged-in user
+    # Scope Cartography now isolates based on the logged-in user ORCID
     cursor.execute("SELECT fields, subfields FROM papers_assessment WHERE scope=? AND user_id=?", (scope, user_id))
     data = cursor.fetchall()
     
-    if not data: return None
+    if not data: return None, None
     
     all_topics = []
     for fields_json, subfields_json in data:
@@ -255,21 +309,22 @@ def generate_interactive_bubble_chart(scope, user_id):
             for s in subfields: all_topics.append({'topic': s, 'category': 'Subfield'})
         except: continue
             
-    if not all_topics: return None
+    if not all_topics: return None, None
     
     df_topics = pd.DataFrame(all_topics)
     topic_counts = df_topics.groupby(['topic', 'category']).size().reset_index(name='count')
     topic_counts = topic_counts.sort_values(by='count', ascending=False).reset_index(drop=True)
     
     max_count = topic_counts['count'].max()
-    min_size = 25
-    max_size = 85
+    min_size = 40  # Increased for larger bubbles
+    max_size = 120 # Increased for larger bubbles
     topic_counts['bubble_size'] = min_size + (topic_counts['count'] / max_count) * (max_size - min_size)
     
     net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50')
     net.barnes_hut(gravity=-3000, central_gravity=0.1, spring_length=150, spring_strength=0.05, damping=0.09, overlap=0)
     
     color_palette = px.colors.qualitative.Bold + px.colors.qualitative.Pastel + px.colors.qualitative.Vivid
+    rgba_palette = [hex_to_rgba(c, 0.6) for c in color_palette] # Added transparency
     
     for i, row in topic_counts.iterrows():
         net.add_node(
@@ -277,7 +332,7 @@ def generate_interactive_bubble_chart(scope, user_id):
             label=" ",  
             title=f"{row['topic']}<br>Category: {row['category']}<br>Focus Frequency: {row['count']}",
             size=row['bubble_size'],
-            color=color_palette[i % len(color_palette)],
+            color=rgba_palette[i % len(rgba_palette)],
             shape='dot'
         )
         
@@ -285,7 +340,7 @@ def generate_interactive_bubble_chart(scope, user_id):
         net.save_graph(tmp_file.name)
         html_string = open(tmp_file.name, 'r', encoding='utf-8').read()
         
-    return html_string
+    return html_string, topic_counts
 
 # --- 8. USER INTERFACE ---
 st.title("π-Index Assessment Engine")
@@ -325,6 +380,9 @@ with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
 tab1, tab2, tab3 = st.tabs(["Batch Assessment", "Scope Cartography", "Active Epoch Constants"])
 
 with tab1:
+    if not st.session_state.is_authenticated:
+        st.warning("⚠️ Please connect your ORCID iD in the sidebar to securely record your assessments.")
+        
     research_scope = st.text_input("Define your specific Research Topic / Scope", placeholder="e.g., Application of deep learning in vascular imaging...")
     
     uploaded_files = st.file_uploader("Upload Academic Papers (PDFs)", type=["pdf"], accept_multiple_files=True)
@@ -338,7 +396,7 @@ with tab1:
             status_text.text(f"Analyzing {i+1} of {len(uploaded_files)}: {file.name}...")
             if i > 0: time.sleep(1.5) 
             
-            # Pass user_id to process_single_pdf
+            # Pass user_id (ORCID) to process_single_pdf
             title, score, drift, rec, fields, subfields, scores_dict = process_single_pdf(file.read(), file.name, research_scope, current_user)
             
             combined_fields = f"Fields: {', '.join(fields)} | Subfields: {', '.join(subfields)}"
@@ -382,17 +440,28 @@ with tab1:
         df_hist = pd.DataFrame(history_data, columns=["Paper Title", "Scope", "π-Index Score", "Date", "Evaluation Hash"])
         st.dataframe(df_hist, use_container_width=True, hide_index=True)
     else:
-        st.info("No assessment history found for this Researcher ID.")
+        st.info("No assessment history found for this ORCID iD.")
 
 with tab2:
     st.subheader("Field & Subfield Epistemic Bubbles")
     st.write("Visualizing your research scope (Click and drag the bubbles to interact)")
     
     if research_scope:
-        # Generate chart filtered by user_id
-        interactive_html = generate_interactive_bubble_chart(research_scope, current_user)
-        if interactive_html: 
-            components.html(interactive_html, height=620)
+        # Generate chart filtered by user ORCID
+        interactive_html, topic_counts = generate_interactive_bubble_chart(research_scope, current_user)
+        if interactive_html:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                components.html(interactive_html, height=620)
+            with col2:
+                st.markdown("### Legend & Frequencies")
+                st.dataframe(
+                    topic_counts[['topic', 'category', 'count']].rename(columns={
+                        'topic': 'Topic', 'category': 'Category', 'count': 'Frequency'
+                    }), 
+                    hide_index=True, 
+                    use_container_width=True
+                )
         else: 
             st.info("Awaiting sufficient data for this scope and user.")
     else:
@@ -447,25 +516,7 @@ with tab3:
                 col.markdown(f"**{name} ({symbol})**")
                 col.markdown(f"<h3 style='margin-top:0px; margin-bottom:5px;'>{weights[i]:.6f}</h3>", unsafe_allow_html=True)
                 
-                with col.expander("PoS Seed"):
-                    seed_hash = hashlib.sha256(f"{weights[i]}_pos_{block_height}_{current_pi_base}_{eval_hash}".encode()).hexdigest()
-                    st.code(f"{seed_hash}", language="text")
-
         st.markdown("---")
-        st.markdown("### The Architecture of the Seed")
-        st.markdown(r"""
-        The PoS Seed is not a wallet balance or an account address; it is a cryptographic proof of integrity for that specific weight value. When generated, a SHA-256 hash binds four distinct pieces of information together:
-        
-        1.  **The Weight Value:** The specific numerical value of $\varpi_i$ (e.g., 1.000000).
-        2.  **Epoch Block Height:** The index of the blockchain epoch.
-        3.  **$\pi$ Accuracy:** The value of $\pi$ used for that specific epoch.
-        4.  **Evaluation Hash:** The unique ID of the academic paper that triggered the weight update.
-        
-        **Formula:**
-        $$ \text{PoS Seed} = \text{SHA-256}(\text{Weight}_i + \text{BlockHeight} + \pi_{\text{acc}} + \text{EvalHash}) $$
-        
-        This creates a unique "fingerprint." If anyone were to manually change the value of $\varpi_i$ in the database, the PoS Seed would no longer match the hash stored in the block, and the blockchain explorer would immediately flag it as Tampered.
-        """)
         
         st.markdown("### PoS Blockchain Explorer")
         st.markdown("""
@@ -510,3 +561,5 @@ with tab3:
 
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
+
+```
