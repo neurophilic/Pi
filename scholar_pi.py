@@ -19,12 +19,12 @@ st.set_page_config(page_title="π-Index Assessment Engine", layout="wide")
 PRIMARY_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "llama-3.1-8b-instant"
 MAX_TEXT_TOKENS = 6000
-EPOCH_HOURS = 24  
 SEED_NUMBER = 42
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
 os.makedirs(BASE_DIR, exist_ok=True)
-DB_PATH = os.path.join(BASE_DIR, 'pi_index_assessment_v6_pos.db')
+# Updated DB name for floating point constant migration
+DB_PATH = os.path.join(BASE_DIR, 'pi_index_assessment_v7_pos.db')
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 if not GROQ_API_KEY:
@@ -33,18 +33,18 @@ if not GROQ_API_KEY:
 client = Groq(api_key=GROQ_API_KEY)
 
 # --- 2. PI PROGRESSION (EPOCH ACCURACY) ---
-def get_pi_base(block_height):
+def get_pi_float(block_height):
     """Increases Pi accuracy by revealing more decimals as epochs (blocks) progress."""
-    pi_digits = "3141592653589793238462643383279502884197169399375105820974944592"
-    # Block 1 starts at 3.14 (base 314), Block 2 -> 3141, Block 3 -> 31415, etc.
-    length = min(block_height + 2, len(pi_digits))
-    return int(pi_digits[:length])
+    pi_str = "3.141592653589793238462643383279502884197169399375105820974944592"
+    # Block 1 starts at 3.14 (4 chars), Block 2 -> 3.141, etc.
+    length = min(block_height + 3, len(pi_str))
+    return float(pi_str[:length])
 
 # --- 3. BLOCKCHAIN (PROOF OF STAKE) & DATABASE INITIALIZATION ---
-def validate_block_pos(block_index, weights, timestamp, previous_hash):
-    """Simulates Proof-of-Stake validation to generate a block hash."""
+def validate_block_pos(block_index, weights, timestamp, previous_hash, eval_hash, model_used):
+    """Simulates Proof-of-Stake validation to generate a unique block hash per paper."""
     validator_node = "Validator_Pi_" + hashlib.md5(str(time.time()).encode()).hexdigest()[:6]
-    data = f"{block_index}{weights}{timestamp}{previous_hash}{validator_node}".encode('utf-8')
+    data = f"{block_index}{weights}{timestamp}{previous_hash}{validator_node}{eval_hash}{model_used}".encode('utf-8')
     block_hash = hashlib.sha256(data).hexdigest()
     return validator_node, block_hash
 
@@ -62,95 +62,60 @@ def init_system():
                        
     cursor.execute('''CREATE TABLE IF NOT EXISTS blockchain_pos_weights 
                       (block_height INTEGER PRIMARY KEY AUTOINCREMENT, 
-                       w1 INTEGER, w2 INTEGER, w3 INTEGER, w4 INTEGER, 
-                       w5 INTEGER, w6 INTEGER, w7 INTEGER, w8 INTEGER, 
+                       w1 REAL, w2 REAL, w3 REAL, w4 REAL, 
+                       w5 REAL, w6 REAL, w7 REAL, w8 REAL, 
                        timestamp DATETIME, previous_hash TEXT, 
-                       validator_node TEXT, block_hash TEXT)''')
+                       validator_node TEXT, block_hash TEXT, eval_hash TEXT, model_used TEXT)''')
     
     cursor.execute("SELECT COUNT(*) FROM blockchain_pos_weights")
     if cursor.fetchone()[0] == 0:
-        # Genesis Block: Derived from Pi=3.14 -> base 314
-        genesis_base = get_pi_base(1)
-        base_val = genesis_base // 8
-        genesis_weights = [base_val] * 8
-        genesis_weights[-1] += (genesis_base - sum(genesis_weights))
-        
+        # Genesis Block: Constants initialized to exactly 1.0
+        genesis_weights = [1.0] * 8
         prev_hash = "0" * 64
         timestamp = datetime.now().isoformat()
-        val_node, block_hash = validate_block_pos(1, genesis_weights, timestamp, prev_hash)
+        val_node, block_hash = validate_block_pos(1, genesis_weights, timestamp, prev_hash, "genesis", "none")
         
         cursor.execute('''INSERT INTO blockchain_pos_weights 
-                          (w1, w2, w3, w4, w5, w6, w7, w8, timestamp, previous_hash, validator_node, block_hash) 
-                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
-                       (*genesis_weights, timestamp, prev_hash, val_node, block_hash))
+                          (w1, w2, w3, w4, w5, w6, w7, w8, timestamp, previous_hash, validator_node, block_hash, eval_hash, model_used) 
+                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                       (*genesis_weights, timestamp, prev_hash, val_node, block_hash, "genesis", "none"))
     conn.commit()
     return conn
 
 conn = init_system()
 
-# --- 4. RECURSIVE ENTROPY WEIGHT METHOD (DYNAMIC PI MAPPING) ---
-def calculate_ewm_integers(matrix, target_pi_base):
-    m, n = matrix.shape
-    if m <= 1:
-        base_val = target_pi_base // n
-        weights = [base_val] * n
-        weights[-1] += (target_pi_base - sum(weights))
-        return weights
-    
-    norm_matrix = np.zeros_like(matrix)
-    for j in range(n):
-        col = matrix[:, j]
-        c_min, c_max = col.min(), col.max()
-        if c_max - c_min > 1e-9:
-            norm_matrix[:, j] = (col - c_min) / (c_max - c_min)
-        else:
-            norm_matrix[:, j] = 0.5 
-
-    col_sums = norm_matrix.sum(axis=0)
-    col_sums[col_sums == 0] = 1e-9 
-    p_matrix = norm_matrix / col_sums
-    
-    p_matrix_eps = np.where(p_matrix == 0, 1e-12, p_matrix)
-    entropy = - (1.0 / np.log(m)) * np.sum(p_matrix * np.log(p_matrix_eps), axis=0)
-    
-    d = 1.0 - entropy
-    d_sum = d.sum()
-    if d_sum == 0:
-        float_weights = np.ones(n) / n
+# --- 4. DYNAMIC WEIGHT ADAPTATION (LLM DEPENDENT) ---
+def calculate_model_driven_weights(old_weights, scores, model_name, block_height):
+    """
+    Formulates the new constant based on the model's decision, LLM version, size, Pi, and delta.
+    """
+    if "70b" in model_name:
+        v, s = 3.3, 70.0
     else:
-        float_weights = d / d_sum
-
-    int_weights = [int(round(w * target_pi_base)) for w in float_weights]
-    diff = target_pi_base - sum(int_weights)
-    int_weights[-1] += diff 
-    
-    return int_weights
-
-def trigger_blockchain_epoch():
-    cursor = conn.cursor()
-    cursor.execute("SELECT block_height, block_hash, timestamp FROM blockchain_pos_weights ORDER BY block_height DESC LIMIT 1")
-    last_block = cursor.fetchone()
-    last_block_height, previous_hash, last_timestamp = last_block[0], last_block[1], last_block[2]
-    last_epoch_date = datetime.fromisoformat(last_timestamp)
-    
-    if datetime.now() - last_epoch_date >= timedelta(hours=EPOCH_HOURS):
-        target_date = (datetime.now() - timedelta(hours=EPOCH_HOURS)).isoformat()
-        cursor.execute("SELECT c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment WHERE timestamp >= ?", (target_date,))
-        rows = cursor.fetchall()
+        v, s = 3.1, 8.0
         
-        if len(rows) > 5:
-            new_height = last_block_height + 1
-            current_pi_base = get_pi_base(new_height)
-            new_int_weights = calculate_ewm_integers(np.array(rows), current_pi_base)
-            
-            timestamp = datetime.now().isoformat()
-            val_node, block_hash = validate_block_pos(new_height, new_int_weights, timestamp, previous_hash)
-            
-            cursor.execute('''INSERT INTO blockchain_pos_weights 
-                              (w1, w2, w3, w4, w5, w6, w7, w8, timestamp, previous_hash, validator_node, block_hash) 
-                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
-                           (*new_int_weights, timestamp, previous_hash, val_node, block_hash))
-            conn.commit()
+    pi_acc = get_pi_float(block_height)
+    
+    # Delta of different models: |(V1 * S1) - (V2 * S2)| = |(3.3 * 70) - (3.1 * 8)|
+    delta_models = abs((3.3 * 70.0) - (3.1 * 8.0)) 
+    
+    new_weights = []
+    for i, old_w in enumerate(old_weights):
+        c_score = scores[i]
+        
+        # Change is formulated by LLM version, size, pi, delta of models, and the criteria value decided
+        delta_w = ((v * s) / (delta_models * pi_acc)) * (c_score / 100.0)
+        
+        # We blend the dynamic delta into the old weight. 
+        # Using a dampening factor so it oscillates structurally around 1.0 over time.
+        w_new = old_w * 0.85 + (1.0 + delta_w * 0.15) * 0.15
+        new_weights.append(w_new)
+        
+    # Normalize so the sum remains equal to the original baseline (8.0)
+    sum_w = sum(new_weights)
+    normalized_weights = [(w / sum_w) * 8.0 for w in new_weights]
+    
+    return [round(w, 6) for w in normalized_weights]
 
 # --- 5. SEMANTIC LLM EXTRACTION & MATHEMATICAL DRIFT ---
 def evaluate_pdf_text(text, scope, model):
@@ -228,28 +193,43 @@ def process_single_pdf(file_bytes, filename, scope):
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     text = " ".join([page.get_text() for page in doc[:3]])
     
+    model_used = PRIMARY_MODEL
     try:
-        raw_data = evaluate_pdf_text(text, scope, PRIMARY_MODEL)
+        raw_data = evaluate_pdf_text(text, scope, model_used)
     except RateLimitError:
         time.sleep(2)
-        raw_data = evaluate_pdf_text(text, scope, FALLBACK_MODEL)
+        model_used = FALLBACK_MODEL
+        raw_data = evaluate_pdf_text(text, scope, model_used)
         
-    cursor.execute("SELECT block_height, w1, w2, w3, w4, w5, w6, w7, w8 FROM blockchain_pos_weights ORDER BY block_height DESC LIMIT 1")
+    cursor.execute("SELECT block_height, block_hash, w1, w2, w3, w4, w5, w6, w7, w8 FROM blockchain_pos_weights ORDER BY block_height DESC LIMIT 1")
     epoch_data = cursor.fetchone()
     block_height = epoch_data[0]
-    int_weights = epoch_data[1:]
-    
-    current_pi_base = get_pi_base(block_height)
+    previous_hash = epoch_data[1]
+    old_weights = epoch_data[2:]
     
     scores_dict = raw_data.get("scores", {})
     scores = [scores_dict.get(k, 50.0) for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]]
+    
+    # Calculate new dynamic weights based on this specific paper and model
+    new_weights = calculate_model_driven_weights(old_weights, scores, model_used, block_height)
+    
+    # Mine new block for this specific evaluation
+    timestamp = datetime.now().isoformat()
+    new_height = block_height + 1
+    val_node, block_hash = validate_block_pos(new_height, new_weights, timestamp, previous_hash, file_hash, model_used)
+    
+    cursor.execute('''INSERT INTO blockchain_pos_weights 
+                      (w1, w2, w3, w4, w5, w6, w7, w8, timestamp, previous_hash, validator_node, block_hash, eval_hash, model_used) 
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                   (*new_weights, timestamp, previous_hash, val_node, block_hash, file_hash, model_used))
     
     scope_alignment = raw_data.get("Scope_Alignment", 50.0)
     title = raw_data.get("Extracted_Title", filename)
     fields = raw_data.get("fields", ["General Science"])
     subfields = raw_data.get("subfields", ["General"])
     
-    final_score = float(np.dot(scores, int_weights)) / float(current_pi_base)
+    # Calculate final score utilizing the newly minted constant weights
+    final_score = float(np.dot(scores, new_weights)) / 8.0
     drift = calculate_complex_drift(scope_alignment, scores)
     
     cursor.execute('''INSERT INTO papers_assessment 
@@ -257,9 +237,8 @@ def process_single_pdf(file_bytes, filename, scope):
                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                    (file_hash, title, filename, scope, *scores,
                     scope_alignment,
-                    json.dumps(subfields), json.dumps(fields), final_score, datetime.now().isoformat()))
+                    json.dumps(subfields), json.dumps(fields), final_score, timestamp))
     conn.commit()
-    trigger_blockchain_epoch()
     
     return title, final_score, drift, get_recommendation_spectrum(final_score, drift), fields, subfields, scores_dict
 
@@ -382,7 +361,7 @@ with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
         st.markdown("**C8: Future Actionability**  \nDetermines theoretical continuation potential using Lyapunov exponents on phase space logistics.")
         st.markdown(r"$$F_a = \varpi_8 \cdot \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\mathbf{x}) \times 100$$")
 
-tab1, tab2, tab3 = st.tabs(["Batch Assessment", "Scope Cartography", "Active Epoch Integer Constants"])
+tab1, tab2, tab3 = st.tabs(["Batch Assessment", "Scope Cartography", "Active Epoch Constants"])
 
 with tab1:
     research_scope = st.text_input("Define your specific Research Topic / Scope", placeholder="e.g., Application of deep learning in vascular imaging...")
@@ -434,7 +413,7 @@ with tab1:
 
 with tab2:
     st.subheader("Field & Subfield Epistemic Bubbles")
-    st.write("Visualizing the disciplines and specializations involved in your uploaded literature. Bubble size correlates with topic frequency.")
+    st.write("Visualizing your research scope")
     
     if research_scope:
         fig = generate_bubble_chart(research_scope)
@@ -447,13 +426,20 @@ with tab2:
 
 with tab3:
     cursor = conn.cursor()
-    cursor.execute("SELECT block_height, w1, w2, w3, w4, w5, w6, w7, w8 FROM blockchain_pos_weights ORDER BY block_height DESC LIMIT 1")
+    cursor.execute("SELECT block_height, w1, w2, w3, w4, w5, w6, w7, w8, model_used, eval_hash FROM blockchain_pos_weights ORDER BY block_height DESC LIMIT 1")
     epoch_data = cursor.fetchone()
     
     if epoch_data:
         block_height = epoch_data[0]
-        weights = epoch_data[1:]
-        current_pi_base = get_pi_base(block_height)
+        weights = epoch_data[1:9]
+        model_used = epoch_data[9]
+        eval_hash = epoch_data[10]
+        
+        current_pi_base = get_pi_float(block_height)
+        
+        st.markdown(f"**Last Model Orchestration:** `{model_used}` | **Epoch Block:** `{block_height}`")
+        st.markdown(r"*Weights $(\varpi)$ are initialized at $1.0$ and evolve iteratively via LLM version, parameter size, $\pi$ accuracy progression, and the criteria evaluation delta of the selected model.*")
+        st.markdown("---")
         
         cols = st.columns(4)
         labels = [
@@ -471,12 +457,11 @@ with tab3:
             if i < 8: 
                 name, symbol = labels[i]
                 col.markdown(f"**{name} ({symbol})**")
-                col.markdown(f"<h3 style='margin-top:0px; margin-bottom:5px;'>{weights[i]} / {current_pi_base}</h3>", unsafe_allow_html=True)
-                col.markdown("<p style='color:gray; font-size: 0.8em; margin-bottom: 5px;'>an integer derived from Pi=3.14</p>", unsafe_allow_html=True)
+                col.markdown(f"<h3 style='margin-top:0px; margin-bottom:5px;'>{weights[i]:.6f}</h3>", unsafe_allow_html=True)
                 
                 with col.expander("Proof of Stake Seed"):
-                    seed_hash = hashlib.sha256(f"{weights[i]}_pos_{block_height}_{current_pi_base}".encode()).hexdigest()
-                    st.code(f"Seed: {seed_hash[:24]}...\nPrecision Acc: {current_pi_base}", language="text")
+                    seed_hash = hashlib.sha256(f"{weights[i]}_pos_{block_height}_{current_pi_base}_{eval_hash}".encode()).hexdigest()
+                    st.code(f"Seed:\n{seed_hash[:24]}...\nPi Acc: {current_pi_base}", language="text")
 
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
