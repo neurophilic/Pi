@@ -1,15 +1,4 @@
-Using the ORCID iD is a fantastic idea for a scientometric tool like this.
 
-**My Recommendation on Hashing:**
-**Yes, you absolutely should include the ORCID iD in the evaluation hash.**
-
-Here is why: The `eval_hash` is used as the **Primary Key** in your database for storing the paper's assessment. If Researcher A and Researcher B both upload the exact same paper and use the exact same scope string, omitting the user ID would result in the exact same hash. Researcher B would accidentally overwrite Researcher A's assessment in the database.
-
-By including the ORCID iD in the SHA-256 generation, you ensure the hash is **cryptographically unique to the researcher**, avoiding database collisions. Furthermore, because SHA-256 is a one-way function, the ORCID remains pseudonymous and private when the hash is published to the global Proof-of-Stake blockchain ledger.
-
-Here is the updated code. I have implemented a realistic ORCID connection interface in the sidebar using Streamlit's `session_state`. It includes a mock "OAuth Connect" button (which simulates a real API handshake) alongside a manual entry fallback with regular expression (Regex) validation to ensure the ID matches the official ORCID format (`XXXX-XXXX-XXXX-XXXX`).
-
-```python
 import os
 import sqlite3
 import json
@@ -562,4 +551,4 @@ with tab3:
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
 
-```
+
