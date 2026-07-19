@@ -1,10 +1,4 @@
-The issue you are experiencing is due to how Python interprets standard strings vs. "raw" strings. In standard Python strings, combinations like `\f` and `\n` are interpreted as form feeds and newlines, which destroys the LaTeX commands (e.g., `\frac` becomes `rac`).
 
-To fix this, we must explicitly declare the text containing the formulas as raw strings using the `r"..."` prefix so the backslashes are preserved for Streamlit's LaTeX engine. I have explicitly separated the text and math blocks to guarantee they render perfectly.
-
-Here is the fully corrected code:
-
-```python
 import os
 import sqlite3
 import json
@@ -411,4 +405,3 @@ with tab3:
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
 
-```
