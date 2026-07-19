@@ -27,7 +27,7 @@ SEED_NUMBER = 42
 # BLOCKCHAIN CONFIGURATION
 # Defines how many evaluations must occur before mining a new epoch block. 
 # Set to 1 for live testing updates. Change back to 10 for production.
-EPOCH_BLOCK_SIZE = 1 
+EPOCH_BLOCK_SIZE = 5
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
 os.makedirs(BASE_DIR, exist_ok=True)
