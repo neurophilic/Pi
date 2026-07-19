@@ -288,7 +288,7 @@ def generate_interactive_bubble_chart(scope, user_id):
     
     color_map = {topic: get_color(i, len(unique_topics)) for i, topic in enumerate(unique_topics)}
     
-    net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
+    net = Network(height='100px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
     
     # --- STABILIZED PHYSICS TO PREVENT STACKING ---
     physics_options = """
