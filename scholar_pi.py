@@ -1,35 +1,3 @@
-This is a brilliant architectural shift! Instead of relying on the AI to randomly "feel" out a score from 0 to 10 (which can be subjective), we are turning the AI into a **Data Extractor**.
-
-The AI will now simply read the paper and extract specific facts, booleans (True/False), and counts (e.g., "How many authors are there?", "Is funding mentioned?"). Then, your Python app will run those variables through a strict, transparent mathematical algorithm to calculate the final 0-10 score.
-
-### The New Algorithms
-
-Here is exactly how the app will calculate the 10-point score for each metric based on the variables the AI extracts:
-
-* **S1 (CharDensity):** `vocab_level (1-5) + sentence_complexity (1-5)`
-* **S2 (NumDensity):** `(Has tables = 3pt) + (Stat tests count, max 5pt) + (Empirical claims = 2pt)`
-* **S3 (Reasoning):** `(Flow 1-5 * 1.5) + (Addresses counter-arguments = 2.5pt)`
-* **S4 (CitationIntegration):** `Lit_review_depth (1-5) + Citation_support (1-5)`
-* **S4b (CitationVolume):** `Total citations / 5` (Cap at 10, meaning 50+ citations = perfect score)
-* **S5 (AuthorDiversity):** `Number of authors (max 5) + Number of institutions (max 5)`
-* **S6 (Expertise):** `Terminology_usage (1-5) + Methodological_rigor (1-5)`
-* **S7 (Novelty):** `Innovation_level (1-8) + (Explicitly states new contribution = 2pt)`
-* **S8 (Suggestions):** `Actionability_of_future_work (1-8) + (Mentions future work = 2pt)`
-* **S9 (Fees):** `(Mentions funding = 5pt) + (States Conflict of Interest = 5pt)`
-* **S10 (Recency):** `Percentage of citations from last 5 years / 10`
-* **S11 (FieldDiversity):** `Number of different disciplines mentioned * 2.5`
-* **S12 (Validation):** `(Validation method used = 2pt) + (Sample size stated = 2pt) + Reproducibility (1-6)`
-* **S13 (LogicalCoherence):** `Structure_rating (1-5) + Readability_rating (1-5)`
-* **S14 (WebGroundedUniqueness):** `10 - (Similar papers found in Semantic Scholar / 10)`
-* **S15 (AuthorHIndex):** `Estimated author prominence rating (1-10)`
-
----
-
-### The Updated `app.py` Code
-
-Here is the complete code. I have completely rewritten the AI prompt to request these specific variables, and added a `calculate_algorithmic_scores()` function that crunches the numbers before displaying them on the screen.
-
-```python
 import os
 import sqlite3
 import json
@@ -143,7 +111,7 @@ def calculate_algorithmic_scores(ai_data, search_results_count):
         s12_data = ai_data.get('S12', {})
         s12_score = (2.0 if safe_get(s12_data, 'validation_method_used', False) else 0) + \
                     (2.0 if safe_get(s12_data, 'sample_size_stated', False) else 0) + \
-                    float(safe_get(s12_data, 'reproducibility_1_to_6', 3))
+                    float(safe_get(s12_data, 'reproducible_1_to_6', 3))
         computed['S12']['score'] = min(10.0, s12_score)
 
         # S13: LogicalCoherence
@@ -295,5 +263,3 @@ if uploaded_file is not None:
             
             with st.expander(f"Metric {key} ({metric_name}) — Calculated Score: {score}/10"):
                 st.write(reason)
-
-```
