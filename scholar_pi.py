@@ -8,30 +8,28 @@ import requests
 import streamlit as st
 import fitz  # PyMuPDF
 from groq import Groq
-from huggingface_hub import hf_hub_download
-from llama_cpp import Llama
 
 # --- 1. CONFIGURATION & ENVIRONMENT ---
-st.set_page_config(page_title="Scholarπ Paper Evaluator", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Scholarπ Paper Evaluator", page_icon="🎓", layout="wide")
 
 MODEL_NAME = "llama-3.3-70b-versatile"
 SEED_NUMBER = 42
 MAX_TEXT_TOKENS_FOR_LLM = 4000
 
-# Set up local directory storage (No longer using Google Drive paths)
-BASE_DIR = os.path.abspath('./ScholarPi_System_Local')
-MODEL_DIR = os.path.join(BASE_DIR, "models")
-os.makedirs(MODEL_DIR, exist_ok=True)
+# Set up local directory storage
+BASE_DIR = os.path.abspath('./ScholarPi_System_Cloud')
+os.makedirs(BASE_DIR, exist_ok=True)
 
 DB_PATH = os.path.join(BASE_DIR, 'scholar_pi_hashed.db')
 CRITERIA_PATH = os.path.join(BASE_DIR, 'criteria.txt')
 
 # --- 2. API & PERSISTENT DATABASE SETUP ---
-# Fetch the API key safely from environment variables or Streamlit secrets
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 if not GROQ_API_KEY:
-    st.warning("⚠️ Groq API Key not found. Please set the GROQ_API_KEY environment variable.")
-client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+    st.error("⚠️ Groq API Key not found! Please add it to your Streamlit Advanced Settings (Secrets).")
+    st.stop()
+    
+client = Groq(api_key=GROQ_API_KEY)
 
 @st.cache_resource
 def init_system():
@@ -66,33 +64,7 @@ S15: AuthorHIndex – Quantitative score based on the lead/senior author's cumul
 
 conn = init_system()
 
-# --- 3. MODEL DOWNLOAD & CACHED LOAD ---
-REPO_ID = "TheBloke/Mistral-7B-Instruct-v0.2-GGUF"
-FILENAME = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
-MODEL_PATH = os.path.join(MODEL_DIR, FILENAME)
-
-@st.cache_resource
-def load_local_llm():
-    """Downloads (if missing) and keeps the 4GB model in RAM so it doesn't reload on button clicks."""
-    if not os.path.exists(MODEL_PATH):
-        with st.spinner("Downloading Mistral 7B GGUF model to local storage... (This takes a few minutes on first run)"):
-            try:
-                hf_hub_download(
-                    repo_id=REPO_ID,
-                    filename=FILENAME,
-                    local_dir=MODEL_DIR,
-                    local_dir_use_symlinks=False, 
-                )
-            except Exception as e:
-                st.error(f"Error downloading offline model: {e}")
-                return None
-    try:
-        return Llama(model_path=MODEL_PATH, n_gpu_layers=0, n_ctx=MAX_TEXT_TOKENS_FOR_LLM, verbose=False)
-    except Exception as e:
-        st.error(f"Failed to initialize local Llama model: {e}")
-        return None
-
-# --- 4. CORE PROCESSING FUNCTIONS ---
+# --- 3. CORE PROCESSING FUNCTIONS ---
 def get_file_hash_from_bytes(file_bytes):
     return hashlib.sha256(file_bytes).hexdigest()
 
@@ -106,7 +78,7 @@ def calculate_pi_index(base_scores, uniqueness_score_10pt, delta_t=0):
     u_multiplier = Decimal('0.5') + (Decimal(str(u_score)) * Decimal('0.5'))
     return float(Decimal(str(avg_score)) * drift * u_multiplier)
 
-def process_paper(file_bytes, filename, use_local_llm, local_model_instance):
+def process_paper(file_bytes, filename):
     file_hash = get_file_hash_from_bytes(file_bytes)
     
     # Cache Check
@@ -124,17 +96,12 @@ def process_paper(file_bytes, filename, use_local_llm, local_model_instance):
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     text = " ".join([page.get_text() for page in doc])
 
-    # Keyword Extraction
-    if use_local_llm and local_model_instance:
-        kw_messages = [{"role": "user", "content": f"Extract the 5 most critical research keywords. Return ONLY JSON: {{'keywords': []}}. Text: {text[:MAX_TEXT_TOKENS_FOR_LLM]}"}]
-        kw_response = local_model_instance.create_chat_completion(messages=kw_messages, temperature=0, response_format={"type": "json_object"})
-        keywords = json.loads(kw_response['choices'][0]['message']['content']).get('keywords', [])
-    else:
-        kw_response = client.chat.completions.create(
-            messages=[{"role": "user", "content": f"Extract the 5 most critical research keywords. Return JSON: {{'keywords': []}}. Text: {text[:MAX_TEXT_TOKENS_FOR_LLM]}"}],
-            model=MODEL_NAME, temperature=0, seed=SEED_NUMBER, response_format={"type": "json_object"}
-        )
-        keywords = json.loads(kw_response.choices[0].message.content).get('keywords', [])
+    # Keyword Extraction using Groq Cloud
+    kw_response = client.chat.completions.create(
+        messages=[{"role": "user", "content": f"Extract the 5 most critical research keywords. Return JSON: {{'keywords': []}}. Text: {text[:MAX_TEXT_TOKENS_FOR_LLM]}"}],
+        model=MODEL_NAME, temperature=0, seed=SEED_NUMBER, response_format={"type": "json_object"}
+    )
+    keywords = json.loads(kw_response.choices[0].message.content).get('keywords', [])
     
     # Semantic Scholar Sweep
     query = " ".join(keywords)
@@ -148,7 +115,7 @@ def process_paper(file_bytes, filename, use_local_llm, local_model_instance):
     except:
         search_results = "No external data found due to API error."
 
-    # Unified Evaluation
+    # Unified Evaluation using Groq Cloud
     with open(CRITERIA_PATH, 'r') as f: criteria = f.read()
     eval_prompt = f"""Evaluate the paper based on these criteria: {criteria}. 
     For S14 (WebGroundedUniqueness), gauge how saturated the topic is by reviewing this list of similar research:
@@ -156,12 +123,8 @@ def process_paper(file_bytes, filename, use_local_llm, local_model_instance):
     Return ONLY a JSON object with keys S1-S13, S4b, S14, and S15. Each key must contain a nested object with 'score' (a number 0-10) and 'reason' (a concise 1-2 sentence explanation).
     Paper Text: {text[:MAX_TEXT_TOKENS_FOR_LLM]}"""
     
-    if use_local_llm and local_model_instance:
-        scores_response = local_model_instance.create_chat_completion(messages=[{"role": "user", "content": eval_prompt}], temperature=0, response_format={"type": "json_object"})
-        scores_data = json.loads(scores_response['choices'][0]['message']['content'])
-    else:
-        scores_json = client.chat.completions.create(messages=[{"role": "user", "content": eval_prompt}], model=MODEL_NAME, temperature=0, seed=SEED_NUMBER, response_format={"type": "json_object"}).choices[0].message.content
-        scores_data = json.loads(scores_json)
+    scores_json = client.chat.completions.create(messages=[{"role": "user", "content": eval_prompt}], model=MODEL_NAME, temperature=0, seed=SEED_NUMBER, response_format={"type": "json_object"}).choices[0].message.content
+    scores_data = json.loads(scores_json)
     
     # Analytics
     score_keys = ['S1', 'S2', 'S3', 'S4', 'S4b', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12', 'S13', 'S15']
@@ -176,17 +139,10 @@ def process_paper(file_bytes, filename, use_local_llm, local_model_instance):
     
     return pi, scores_data, False
 
-# --- 5. STREAMLIT WEB UI ---
+# --- 4. STREAMLIT WEB UI ---
 st.title("🎓 Scholarπ (ScholarPi) System")
 st.subheader("Automated Multi-Criteria Academic Rigor Analytics")
-
-# App Sidebar controls
-st.sidebar.header("Processing Controls")
-use_local_llm = st.sidebar.checkbox("Use Local LLM (Offline Mistral 7B)", value=False)
-
-local_model = None
-if use_local_llm:
-    local_model = load_local_llm()
+st.info("⚡ Powered by Groq Cloud Llama-3.3-70B")
 
 uploaded_file = st.file_uploader("Upload an Academic Paper (PDF)", type=["pdf"])
 
@@ -195,10 +151,10 @@ if uploaded_file is not None:
     
     if st.button("Run Full Evaluation Pipeline", type="primary"):
         with st.spinner("Analyzing text, parsing literature indices, and generating π-Index metrics..."):
-            pi, justifications, from_cache = process_paper(file_bytes, uploaded_file.name, use_local_llm, local_model)
+            pi, justifications, from_cache = process_paper(file_bytes, uploaded_file.name)
             
         if from_cache:
-            st.info("ℹ️ Retrieved evaluation metrics from 30-Day persistent system cache.")
+            st.success("ℹ️ Retrieved evaluation metrics from persistent system cache.")
         else:
             st.success("✅ Analysis completed successfully!")
 
