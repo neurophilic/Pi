@@ -291,14 +291,14 @@ def generate_interactive_bubble_chart(scope, user_id):
     net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
     
     # --- ADJUSTED PHYSICS FOR MORE SPACE ---
-      physics_options = """
+   physics_options = """
     {
       "physics": {
         "forceAtlas2Based": {
           "gravitationalConstant": -200,
           "centralGravity": 0.05,
           "springLength": 200,
-          "springConstant": 0.1,
+          "springConstant": 0.08,
           "avoidOverlap": 1.0
         },
         "solver": "forceAtlas2Based"
