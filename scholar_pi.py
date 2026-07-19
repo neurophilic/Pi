@@ -1,4 +1,3 @@
-
 import os
 import sqlite3
 import json
@@ -325,35 +324,22 @@ def generate_interactive_bubble_chart(scope, user_id):
         
     html_string = net.generate_html()
     
-    # Updated HTML Table - Contains ONLY Color and Topic
-    table_html = """
-    <style>
-        .table-big { width: 100%; font-size: 14px; border-collapse: collapse; margin-top: 10px; font-family: sans-serif; }
-        .table-big th { background-color: #2c3e50; color: white; padding: 10px; text-align: left; }
-        .table-big td { border-bottom: 1px solid #ddd; padding: 8px; vertical-align: middle; }
-        .color-box { width: 18px; height: 18px; display: inline-block; border-radius: 3px; border: 1px solid #ccc; margin: 0 auto;}
-        .legend-container { max-height: 550px; overflow-y: auto; border: 1px solid #eee; }
-    </style>
-    <div class="legend-container">
-    <table class='table-big'>
-        <thead>
-            <tr>
-                <th style="width: 25%; text-align: center;">Color</th>
-                <th>Topic</th>
-            </tr>
-        </thead>
-        <tbody>
-    """
+    # Updated HTML Table - Indentation stripped to prevent Markdown Code Block styling
+    table_html = "<style>"
+    table_html += ".table-big { width: 100%; font-size: 14px; border-collapse: collapse; margin-top: 10px; font-family: sans-serif; }"
+    table_html += ".table-big th { background-color: #2c3e50; color: white; padding: 10px; text-align: left; }"
+    table_html += ".table-big td { border-bottom: 1px solid #ddd; padding: 8px; vertical-align: middle; }"
+    table_html += ".color-box { width: 18px; height: 18px; display: inline-block; border-radius: 3px; border: 1px solid #ccc; margin: 0 auto;}"
+    table_html += ".legend-container { max-height: 550px; overflow-y: auto; border: 1px solid #eee; }"
+    table_html += "</style>"
+    table_html += "<div class='legend-container'><table class='table-big'>"
+    table_html += "<thead><tr><th style='width: 25%; text-align: center;'>Color</th><th>Topic</th></tr></thead><tbody>"
     
     topic_counts_sorted = topic_counts.sort_values(by="weight", ascending=False)
     
     for _, row in topic_counts_sorted.iterrows():
         color = color_map[row['topic']]
-        table_html += f"""
-        <tr>
-            <td style="text-align: center;"><div class='color-box' style='background-color:{color};'></div></td>
-            <td>{row['topic']}</td>
-        </tr>"""
+        table_html += f"<tr><td style='text-align: center;'><div class='color-box' style='background-color:{color};'></div></td><td>{row['topic']}</td></tr>"
         
     table_html += "</tbody></table></div>"
     
@@ -551,5 +537,3 @@ with tab3:
 
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
-
-
