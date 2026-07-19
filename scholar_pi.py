@@ -1,3 +1,10 @@
+Here is the complete, updated code!
+
+To make sure the final **π-Index** always outputs as a single decimal (like `5.7`), I have added a `round(raw_pi, 1)` command to the calculation function and updated the visual display setting in the user interface to `f"{pi:.1f}"`.
+
+### Copy and paste this into your `app.py`:
+
+```python
 import os
 import sqlite3
 import json
@@ -142,7 +149,9 @@ def calculate_pi_index(base_scores, uniqueness_score_10pt, delta_t=0):
     
     drift = (pi / Decimal('3.14')) ** Decimal(str(delta_t))
     u_multiplier = Decimal('0.5') + (Decimal(str(u_score)) * Decimal('0.5'))
-    return float(Decimal(str(avg_score)) * drift * u_multiplier)
+    
+    raw_pi = float(Decimal(str(avg_score)) * drift * u_multiplier)
+    return round(raw_pi, 1)  # <-- Forces the final score to strictly 1 decimal place
 
 # --- 4. CORE PROCESSING FUNCTIONS ---
 def process_paper(file_bytes, filename):
@@ -175,7 +184,7 @@ def process_paper(file_bytes, filename):
         except:
             pass
 
-        # NEW PROMPT: Asking for Variables instead of Scores
+        # PROMPT: Asking for Variables instead of Scores
         eval_prompt = f"""Read the following academic text. Extract the specific variables required for our algorithmic scoring system.
         Return ONLY a JSON object exactly matching this structure, along with a 1-sentence 'reason' explaining your findings for each section:
         {{
@@ -248,7 +257,9 @@ if uploaded_file is not None:
             model_used = FALLBACK_MODEL if used_fallback else PRIMARY_MODEL
             st.success(f"✅ Algorithms executed successfully via `{model_used}` data extraction!")
 
-        st.metric(label="Calculated Final π-Index", value=f"{pi:.4f}")
+        # <-- Ensures the web app also formats it cleanly to 1 decimal place
+        st.metric(label="Calculated Final π-Index", value=f"{pi:.1f}") 
+        
         st.markdown("### Algorithmic Evaluation Matrix")
         
         ordered_keys = ['S1', 'S2', 'S3', 'S4', 'S4b', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12', 'S13', 'S14', 'S15']
@@ -256,10 +267,11 @@ if uploaded_file is not None:
         
         for key in ordered_keys:
             data = justifications.get(key, {})
-            # We format the float cleanly to 1 decimal point for display
             score = f"{data.get('score', 0):.1f}" 
             reason = data.get('reason', 'No explanation provided.')
             metric_name = METRIC_NAMES.get(key, 'Unknown Metric')
             
             with st.expander(f"Metric {key} ({metric_name}) — Calculated Score: {score}/10"):
                 st.write(reason)
+
+```
