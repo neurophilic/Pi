@@ -21,14 +21,13 @@ st.set_page_config(page_title="π-Index Assessment Engine", layout="wide")
 
 PRIMARY_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "llama-3.1-8b-instant"
-# Set to 12000 chars (~2500 tokens) to safely stay below the 6000 TPM limit
-MAX_TEXT_TOKENS = 12000 
+MAX_TEXT_TOKENS = 12000 # ~2500 tokens to safely stay below the TPM limit
 SEED_NUMBER = 42
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
 os.makedirs(BASE_DIR, exist_ok=True)
-# Updated DB version to accommodate new logic_score column
-DB_PATH = os.path.join(BASE_DIR, 'pi_index_assessment_v13_por.db')
+# FIXED: Using a permanent DB name to stop the blockchain from resetting on version changes.
+DB_PATH = os.path.join(BASE_DIR, 'pi_index_main.db')
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 if not GROQ_API_KEY:
@@ -38,12 +37,10 @@ client = Groq(api_key=GROQ_API_KEY)
 
 # --- UTILITY FUNCTIONS ---
 def verify_orcid_live(orcid_id):
-    """Pings the real ORCID Public API to verify the ID and fetch the user's name."""
     try:
         url = f"https://pub.orcid.org/v3.0/{orcid_id}/person"
         headers = {"Accept": "application/json"}
         response = requests.get(url, headers=headers, timeout=5)
-        
         if response.status_code == 200:
             data = response.json()
             name_data = data.get('name', {})
@@ -77,9 +74,15 @@ def init_system():
                       (eval_hash TEXT PRIMARY KEY, user_id TEXT, title TEXT, filename TEXT, scope TEXT,
                        c1 REAL, c2 REAL, c3 REAL, c4 REAL, 
                        c5 REAL, c6 REAL, c7 REAL, c8 REAL, 
-                       logic_score REAL, scope_alignment REAL,
+                       scope_alignment REAL,
                        subfields TEXT, fields TEXT, final_score REAL, timestamp DATETIME)''')
                        
+    # FIXED: Safe Schema Migration. Adds logic_score if it doesn't exist yet in an older DB.
+    try:
+        cursor.execute("ALTER TABLE papers_assessment ADD COLUMN logic_score REAL DEFAULT 0.0")
+    except sqlite3.OperationalError:
+        pass # Column already exists
+        
     cursor.execute('''CREATE TABLE IF NOT EXISTS blockchain_por_weights 
                       (block_height INTEGER PRIMARY KEY AUTOINCREMENT, 
                        w1 REAL, w2 REAL, w3 REAL, w4 REAL, 
@@ -129,29 +132,19 @@ def calculate_model_driven_weights(old_weights, scores, model_name, block_height
     return [round((w / sum_w) * 8.0, 6) for w in new_weights]
 
 def compute_logical_integrity(v):
-    """
-    Calculates the Logical Integrity Gap.
-    If the author concludes something (Conclusion_Reach) that isn't 
-    supported by the evidence, the score drops exponentially.
-    """
     e_str = v.get('Evidence_Strength', 0.5)
     c_reach = v.get('Conclusion_Reach', 0.5)
     jumps = v.get('Logical_Jumps', 0.5)
     p_valid = v.get('Premise_Validity', 0.5)
     
-    # Mathematical Gap: The distance between evidence and conclusion
-    # We heavily penalize the paper if Conclusion_Reach > Evidence_Strength
+    # Mathematical Gap (Delta_Logic): Distance between evidence and conclusion
     gap = max(0.0, c_reach - e_str)
     
-    # Final Logic Score = (Validity * Evidence) * penalty for gaps and jumps
+    # Exponential decay penalty
     logic_score = (p_valid * e_str) * np.exp(-(gap * 2.0 + jumps * 1.5)) * 100
-    
     return max(0.0, min(100.0, logic_score))
 
 def compute_formulaic_criteria(v):
-    """
-    Computes RAW CRITERIA SCORES (0-100) using Python translations of the LaTeX formulas.
-    """
     scores = {}
     
     H_novel, K_epi = v.get('H_novel', 0.5), v.get('K_epistemic', 0.5)
@@ -169,41 +162,34 @@ def compute_formulaic_criteria(v):
     sum_lam = v.get('sum_lambda_kappa', 1.0)
     eta, Lambda = v.get('eta_steps', 2.0), v.get('Lambda_Lyapunov', 0.5)
 
-    # C1: Originality 
+    # Computations mapped directly to LaTeX definitions
     c1_raw = ((H_novel * K_epi) / (zeta * I_ex + 0.1)) * 60
     scores["C1_Originality"] = min(100.0, max(0.0, c1_raw))
     
-    # C2: Methodological Rigor 
     gamma_val = math.gamma(1.5) 
     rigor_matrix = max(0.0, 1.0 - (Sigma_err / (mu_sig + 0.1)))
     c2_raw = rigor_matrix * rho_k * gamma_val * 140
     scores["C2_Methodological_Rigor"] = min(100.0, max(0.0, c2_raw))
     
-    # C3: Interdisciplinary 
     p_disc = p_disc / (p_disc.sum() + 1e-9)
     renyi = -np.log(np.sum(p_disc**2) + 1e-9) 
     c3_raw = (renyi + bridge_cap) * 55
     scores["C3_Interdisciplinary"] = min(100.0, max(0.0, c3_raw))
     
-    # C4: Societal Impact 
     gamma_q = math.gamma(max(0.1, q_frac))
     c4_raw = (1.0 / gamma_q) * Utility * np.exp(-decay) * 150
     scores["C4_Societal_Impact"] = min(100.0, max(0.0, c4_raw))
     
-    # C5: Open Science Potential 
     c5_raw = ((0.7 * D_open) + (0.3 * J_code)) * P_FAIR * 180
     scores["C5_Open_Science_Potential"] = min(100.0, max(0.0, c5_raw))
     
-    # C6: Literature Integration 
     c6_raw = np.exp(-1.5 * d_g) * R_xi * PR_xi * 180
     scores["C6_Literature_Integration"] = min(100.0, max(0.0, c6_raw))
     
-    # C7: Empirical Density 
     density_inner = (I_Fish * KL_div) / (V_base * omega + 0.1)
     c7_raw = np.tanh(density_inner) * sum_lam * 80
     scores["C7_Empirical_Density"] = min(100.0, max(0.0, c7_raw))
     
-    # C8: Future Actionability 
     c8_raw = (1.0 / (1.0 + np.exp(-(eta - (Lambda * 5))))) * 100
     scores["C8_Future_Actionability"] = min(100.0, max(0.0, c8_raw))
     
@@ -283,7 +269,7 @@ Text: {text}
     response = client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model=model, 
-        temperature=0.1, # Slight temp allows extreme divergence without breaking deterministic structure
+        temperature=0.1, 
         seed=SEED_NUMBER, 
         response_format={"type": "json_object"}
     )
@@ -346,16 +332,13 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     epoch_data = cursor.fetchone()
     block_height, previous_hash, old_weights = epoch_data[0], epoch_data[1], epoch_data[2:]
     
-    # 1. MATHEMATICAL COMPUTATION (Criteria Variables)
     variables = raw_data.get("variables", {})
     scores_dict = compute_formulaic_criteria(variables)
     scores = [scores_dict[k] for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]]
     
-    # 2. ADVERSARIAL LOGIC COMPUTATION
     logic_vars = raw_data.get("logic_analysis", {})
     logic_integrity = compute_logical_integrity(logic_vars)
 
-    # 3. BLOCKCHAIN EPOCH UPDATES (Applies Weight Scaling)
     if total_evals % 10 == 0:
         new_weights = calculate_model_driven_weights(old_weights, scores, model_used, block_height)
         timestamp = datetime.now().isoformat()
@@ -369,10 +352,8 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     title = raw_data.get("Extracted_Title", filename)
     fields, subfields = raw_data.get("fields", ["General Science"]), raw_data.get("subfields", ["General"])
     
-    # Final Score computation uses the Dot Product of mathematical scores and dynamic blockchain weights
+    # Mathematical integration: Base matrix dot product penalized by adversarial logic integrity
     raw_final_score = float(np.dot(scores, new_weights)) / 8.0
-    
-    # Apply Logical Integrity as a structural modifier (Up to a 30% penalty if logic is flawed)
     final_score = float(raw_final_score * (0.7 + (logic_integrity / 333.3)))
     
     drift = calculate_complex_drift(scope_alignment, scores) if scope.strip() else "N/A"
@@ -519,31 +500,31 @@ st.markdown("**Upload papers, define your scope of research, let π-index filter
 
 with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
     st.markdown("### Evaluation Metrics & Adversarial Logic Engine")
-    st.markdown("""
+    st.markdown(r"""
     **Adversarial Logic Gap ($\Delta_{Logic}$):** Before a final score is validated, the system maps the paper's reasoning structure. It penalizes the paper exponentially if the author's conclusions overreach the provided evidence.
-    $$ L_i = \left( \mathcal{P}_{valid} \cdot \mathcal{E}_{strength} \right) \cdot \exp\left(-\left(2 \cdot \max(0, \mathcal{C}_{reach} - \mathcal{E}_{strength}) + 1.5 \cdot \lambda_{jumps}\right)\right) \times 100 $$
+    $$ L_i = (\mathcal{P}_{valid} \cdot \mathcal{E}_{strength}) \cdot \exp\left(-\left(2 \cdot \max(0, \mathcal{C}_{reach} - \mathcal{E}_{strength}) + 1.5 \cdot \lambda_{jumps}\right)\right) \times 100 $$
     """)
     st.markdown("---")
     
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**C1: Originality**\nEvaluates uniqueness through epistemic gradient fields.")
-        st.markdown(r"$$O = \varpi_1 \cdot \lim_{\Delta t \to 0} \oint_{\partial \Omega} \frac{\nabla \times (\mathcal{H}_{novel} \otimes \mathcal{K}_{epistemic})}{\iint_{\mathcal{M}} \sum_{i=1}^N (\zeta_i \cdot \mathcal{I}_{existing}^{(i)}) \, d\mu} \cdot d\mathbf{S} \times 100$$")
+        st.markdown(r"$$O = \varpi_1 \cdot \lim_{\Delta t \to 0} \oint_{\partial \Omega} \frac{\nabla \times (\mathcal{H}_{novel} \otimes \mathcal{K}_{epistemic})}{\iint_{\mathcal{M}} \sum_{i=1}^N (\zeta_i \cdot \mathcal{I}_{existing}^{(i)}) \, d\mu} \cdot d\mathbf{S} \times 100 $$")
         st.markdown("**C2: Methodological Rigor**\nAssesses robustness via error-covariance tensors.")
-        st.markdown(r"$$R = \varpi_2 \cdot \left( 1 - \frac{\mathrm{tr}(\boldsymbol{\Sigma}_{error} \boldsymbol{\Lambda}^{-1})}{\det(\boldsymbol{\mu}_{signal} \otimes \mathbf{W})} \right) \cdot \prod_{k=1}^{m} \int_{0}^{\infty} \rho_k(x) e^{-\beta x^2} \Gamma\left(k+\frac{1}{2}\right) dx \times 100$$")
+        st.markdown(r"$$R = \varpi_2 \cdot \left( 1 - \frac{\mathrm{tr}(\boldsymbol{\Sigma}_{error} \boldsymbol{\Lambda}^{-1})}{\det(\boldsymbol{\mu}_{signal} \otimes \mathbf{W})} \right) \cdot \prod_{k=1}^{m} \int_{0}^{\infty} \rho_k(x) e^{-\beta x^2} \Gamma\left(k+\frac{1}{2}\right) dx \times 100 $$")
         st.markdown("**C3: Interdisciplinary**\nMeasures bridge capacity using generalized Rényi entropy.")
-        st.markdown(r"$$I = \varpi_3 \cdot \left( \frac{1}{1-\alpha} \ln \left( \sum_{j=1}^{K} p_j^\alpha \right) + \sum_{i,j} \frac{A_{ij} \phi_i \phi_j}{\sqrt{d_i d_j}} \right) \cdot \frac{\Xi(\mathcal{G})}{\ln K \cdot \mathcal{Z}_{norm}} \times 100$$")
+        st.markdown(r"$$I = \varpi_3 \cdot \left( \frac{1}{1-\alpha} \ln \left( \sum_{j=1}^{K} p_j^\alpha \right) + \sum_{i,j} \frac{A_{ij} \phi_i \phi_j}{\sqrt{d_i d_j}} \right) \cdot \frac{\Xi(\mathcal{G})}{\ln K \cdot \mathcal{Z}_{norm}} \times 100 $$")
         st.markdown("**C4: Societal Impact**\nProjects applications utilizing fractional stochastic integration.")
-        st.markdown(r"$$S = \varpi_4 \cdot \frac{1}{\Gamma(q)} \int_{t_0}^{t_\infty} (t_\infty - \tau)^{q-1} e^{-\gamma(\tau) \tau} \cdot \Theta\left[ \sum_{v \in \mathcal{V}} \omega_v U_v(\tau, \mathbf{x}) \right] d\tau \times 100$$")
+        st.markdown(r"$$S = \varpi_4 \cdot \frac{1}{\Gamma(q)} \int_{t_0}^{t_\infty} (t_\infty - \tau)^{q-1} e^{-\gamma(\tau) \tau} \cdot \Theta\left[ \sum_{v \in \mathcal{V}} \omega_v U_v(\tau, \mathbf{x}) \right] d\tau \times 100 $$")
     with col2:
         st.markdown("**C5: Open Science Potential**\nGauges transparency via multi-objective integration.")
-        st.markdown(r"$$O_s = \varpi_5 \cdot \frac{\sum_{\ell \in \mathcal{L}} \alpha_\ell \mathcal{D}_{open}^{(\ell)} + \beta \iint_{\mathcal{C}} \nabla \cdot \mathbf{J}_{code} \, dV}{\max \left( \sup_{t} \mathcal{D}_{total}(t), \inf_{\epsilon>0} \mathcal{C}_{total}(\epsilon) \right)} \times \mathcal{P}_{FAIR} \times 100$$")
+        st.markdown(r"$$O_s = \varpi_5 \cdot \frac{\sum_{\ell \in \mathcal{L}} \alpha_\ell \mathcal{D}_{open}^{(\ell)} + \beta \iint_{\mathcal{C}} \nabla \cdot \mathbf{J}_{code} \, dV}{\max \left( \sup_{t} \mathcal{D}_{total}(t), \inf_{\epsilon>0} \mathcal{C}_{total}(\epsilon) \right)} \times \mathcal{P}_{FAIR} \times 100 $$")
         st.markdown("**C6: Literature Integration**\nEvaluates embedding via non-Euclidean PageRank.")
-        st.markdown(r"$$L = \varpi_6 \cdot \frac{1}{\mathcal{N}} \sum_{i=1}^{\mathcal{N}} \int_{\mathcal{M}} e^{-\lambda d_g(x_i, x_{core})} R(x_i) \sqrt{g} \, dx_i \cdot \frac{\text{PR}(x_i)}{\sum_j \text{PR}(x_j)} \times 100$$")
+        st.markdown(r"$$L = \varpi_6 \cdot \frac{1}{\mathcal{N}} \sum_{i=1}^{\mathcal{N}} \int_{\mathcal{M}} e^{-\lambda d_g(x_i, x_{core})} R(x_i) \sqrt{g} \, dx_i \cdot \frac{\text{PR}(x_i)}{\sum_j \text{PR}(x_j)} \times 100 $$")
         st.markdown("**C7: Empirical Density**\nEvaluates data depth utilizing Fisher information metrics.")
-        st.markdown(r"$$E_d = \varpi_7 \cdot \tanh \left( \frac{\det \mathcal{I}_{Fisher}(\hat{\theta}) \cdot \mathbb{E}_{P}\left[\log\frac{P}{Q}\right]}{\mathcal{V}_{baseline} \cdot \oint_\Gamma \omega_{data}} \right) \times \sum_{d=1}^D \lambda_d \kappa_d \times 100$$")
+        st.markdown(r"$$E_d = \varpi_7 \cdot \tanh \left( \frac{\det \mathcal{I}_{Fisher}(\hat{\theta}) \cdot \mathbb{E}_{P}\left[\log\frac{P}{Q}\right]}{\mathcal{V}_{baseline} \cdot \oint_\Gamma \omega_{data}} \right) \times \sum_{d=1}^D \lambda_d \kappa_d \times 100 $$")
         st.markdown("**C8: Future Actionability**\nDetermines continuation potential using Lyapunov exponents.")
-        st.markdown(r"$$F_a = \varpi_8 \cdot \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\mathbf{x}) \times 100$$")
+        st.markdown(r"$$F_a = \varpi_8 \cdot \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\mathbf{x}) \times 100 $$")
 
 tab1, tab2, tab3 = st.tabs(["Batch Assessment", "Scope Cartography", "Active Epoch Constants"])
 
