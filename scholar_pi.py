@@ -20,7 +20,7 @@ st.set_page_config(page_title="π-Index Assessment Engine", layout="wide")
 
 PRIMARY_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "llama-3.1-8b-instant"
-# Reduced to 12000 chars (~2500 tokens) to safely stay below the 6000 TPM limit
+# Set to 12000 chars (~2500 tokens) to safely stay below the 6000 TPM limit
 MAX_TEXT_TOKENS = 12000 
 SEED_NUMBER = 42
 
@@ -36,7 +36,6 @@ client = Groq(api_key=GROQ_API_KEY)
 
 # --- UTILITY FUNCTIONS ---
 def verify_orcid_live(orcid_id):
-    """Pings the real ORCID Public API to verify the ID and fetch the user's name."""
     try:
         url = f"https://pub.orcid.org/v3.0/{orcid_id}/person"
         headers = {"Accept": "application/json"}
@@ -107,7 +106,7 @@ def init_system():
 
 conn = init_system()
 
-# --- 3. CORE ENGINE LOGIC ---
+# --- 3. MATHEMATICAL ALGORITHM ENGINE ---
 def calculate_model_driven_weights(old_weights, scores, model_name, block_height):
     v, s = (3.3, 70.0) if "70b" in model_name else (3.1, 8.0)
     pi_acc = get_pi_float(block_height)
@@ -126,35 +125,91 @@ def calculate_model_driven_weights(old_weights, scores, model_name, block_height
     sum_w = sum(new_weights)
     return [round((w / sum_w) * 8.0, 6) for w in new_weights]
 
+def compute_formulaic_criteria(v, w):
+    """
+    Actively utilizes the extracted variables to compute the theoretical LaTeX formulas.
+    Outputs are bounded between 0 and 100.
+    """
+    scores = {}
+    
+    # C1: Originality (Gradient/Curl estimation) -> O = w1 * ((H_novel * K_epistemic) / zeta) * 100
+    scores["C1_Originality"] = min(100.0, w[0] * ((v.get('H_novel', 0.5) * v.get('K_epistemic', 0.5)) / max(0.1, v.get('zeta', 1.0))) * 100)
+    
+    # C2: Methodological Rigor (Error Covariance) -> R = w2 * (1 - Sigma_error / mu_signal) * 100
+    scores["C2_Methodological_Rigor"] = min(100.0, max(0.0, w[1] * (1.0 - (v.get('Sigma_error', 0.5) / max(0.1, v.get('mu_signal', 0.5)))) * 100))
+    
+    # C3: Interdisciplinary (Rényi Entropy) -> I = w3 * (H2 + bridge_capacity) * 100
+    p = np.array(v.get('p_disciplines', [1.0]))
+    p = p / p.sum() if p.sum() > 0 else np.array([1.0])
+    renyi = -np.log(np.sum(p**2) + 1e-9)
+    scores["C3_Interdisciplinary"] = min(100.0, w[2] * (((renyi / 1.1) * 0.5) + (v.get('bridge_capacity', 0.5) * 0.5)) * 100)
+    
+    # C4: Societal Impact (Fractional Stochastic) -> S = w4 * (Utility * exp(-decay)) * 100
+    scores["C4_Societal_Impact"] = min(100.0, w[3] * (v.get('Utility_vector', 0.5) * np.exp(-v.get('decay_rate', 0.5))) * 100)
+    
+    # C5: Open Science (Multi-objective integration) -> Os = w5 * (D_open + J_code) * P_FAIR * 100
+    scores["C5_Open_Science_Potential"] = min(100.0, w[4] * ((0.7 * v.get('D_open', 0.5) + 0.3 * v.get('J_code', 0.0)) * v.get('P_FAIR', 0.5)) * 100)
+    
+    # C6: Literature Integration (PageRank proxy) -> L = w6 * (Relevance * exp(-d_g)) * 100
+    scores["C6_Literature_Integration"] = min(100.0, w[5] * (v.get('Relevance', 0.5) * np.exp(-1.5 * v.get('d_g_distance', 0.5))) * 100)
+    
+    # C7: Empirical Density (Fisher Information) -> Ed = w7 * tanh(I_Fisher / V_baseline) * 100
+    scores["C7_Empirical_Density"] = min(100.0, w[6] * np.tanh(v.get('I_Fisher', 0.5) / max(0.1, v.get('V_baseline', 0.5))) * 100)
+    
+    # C8: Future Actionability (Lyapunov Exponent) -> Fa = w8 * (1 / (1 + exp(-eta + Lambda))) * 100
+    scores["C8_Future_Actionability"] = min(100.0, w[7] * (1.0 / (1.0 + np.exp(-(v.get('eta_steps', 2.0) - v.get('Lambda_Lyapunov', 0.5))))) * 100)
+    
+    return scores
+
 def evaluate_pdf_text(text, scope, model, text_limit):
     if len(text) > text_limit:
         text = text[:text_limit]
 
-    # Dynamically inject the scope instruction based on whether the user provided one
     if scope.strip():
-        scope_instruction = f'After scoring the paper objectively, evaluate its "Scope_Alignment" (0-100) specifically to this user project/scope: "{scope}"'
+        scope_instruction = f'Evaluate "Scope_Alignment" (0-100) based on this specific project scope: "{scope}"'
     else:
         scope_instruction = 'Set "Scope_Alignment" to 0, as no specific project scope was provided.'
 
-    prompt = f"""You are a brutally critical expert peer reviewer contributing to the π-Index.
+    prompt = f"""You are the theoretical parser for the π-Index Assessment Engine.
+Instead of assigning arbitrary scores, you must extract the underlying mathematical proxy variables for this paper.
 
-Evaluate the provided academic paper based PURELY on its own inherent absolute merit. Do NOT let any specific project scope influence your scoring of the 8 criteria (C1-C8).
-
-CRITICAL INSTRUCTION: You MUST use the full 0-100 scale for scores. Do NOT cluster scores around 70-80. If a paper is weak in an area, give it a 10 or 20. If exceptional, 90+. Force extreme variance based on actual merit.
+Evaluate the text and extract these exact variables (all values must be floats between 0.0 and 1.0, unless specified otherwise):
+- `H_novel`: Degree of conceptual novelty introduced.
+- `K_epistemic`: Degree of epistemic shift (paradigm change).
+- `zeta`: Citation density/reliance on existing works.
+- `Sigma_error`: Probability of methodological error/bias.
+- `mu_signal`: Robustness and clarity of the core methodology.
+- `p_disciplines`: Array of 2 to 4 floats representing the distribution of fields used (e.g., [0.7, 0.3]).
+- `bridge_capacity`: The success of bridging these disciplines.
+- `Utility_vector`: Direct real-world application potential.
+- `decay_rate`: How quickly the research will become obsolete (0.1 = slow, 0.9 = fast).
+- `D_open`: Availability of open data.
+- `J_code`: Availability of open source code/scripts.
+- `P_FAIR`: Compliance with FAIR data principles.
+- `Relevance`: Relevance to core literature.
+- `d_g_distance`: Distance to the central core of the subject (0.1 = foundational, 0.9 = niche/fringe).
+- `I_Fisher`: Information density (empirical depth).
+- `V_baseline`: Standard variance/noise in the data.
+- `eta_steps`: Integer 1 to 5, number of concrete actionable future steps identified.
+- `Lambda_Lyapunov`: Trajectory divergence (0.1 = predictable continuation, 0.9 = chaotic/disruptive future).
 
 {scope_instruction}
 
-Return ONLY a valid JSON object matching exactly this structure:
+Return ONLY a JSON object exactly matching this structure:
 {{
     "Extracted_Title": "Title", 
     "Scope_Alignment": 85,
-    "scores": {{"C1_Originality": 20, "C2_Methodological_Rigor": 95, "C3_Interdisciplinary": 40, "C4_Societal_Impact": 15, "C5_Open_Science_Potential": 60, "C6_Literature_Integration": 80, "C7_Empirical_Density": 55, "C8_Future_Actionability": 30}},
+    "variables": {{
+        "H_novel": 0.8, "K_epistemic": 0.7, "zeta": 0.5, "Sigma_error": 0.1, "mu_signal": 0.9,
+        "p_disciplines": [0.6, 0.4], "bridge_capacity": 0.8, "Utility_vector": 0.7, "decay_rate": 0.2,
+        "D_open": 0.0, "J_code": 0.0, "P_FAIR": 0.3, "Relevance": 0.9, "d_g_distance": 0.2,
+        "I_Fisher": 0.8, "V_baseline": 0.4, "eta_steps": 3, "Lambda_Lyapunov": 0.4
+    }},
     "fields": ["Field1", "Field2"], 
     "subfields": ["Subfield1"]
 }}
 Text: {text}
 """
-    # LLM frozen with temperature 0.0 and explicit seed 42 to guarantee deterministic results
     response = client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model=model, 
@@ -180,7 +235,6 @@ def get_recommendation_spectrum(score, drift):
     return "Tier VI: Orthogonal / Unrelated Noise"
 
 def process_single_pdf(file_bytes, filename, scope, user_id):
-    # Hash uniquely isolates the paper
     file_hash = hashlib.sha256(file_bytes + user_id.encode('utf-8')).hexdigest()
     cursor = conn.cursor()
     cursor.execute("SELECT final_score, scope_alignment, title, fields, subfields, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment WHERE eval_hash=? AND user_id=?", (file_hash, user_id))
@@ -195,21 +249,17 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
         drift = calculate_complex_drift(alignment, scores_array) if scope.strip() else "N/A"
         rec = get_recommendation_spectrum(score, drift) if scope.strip() else "N/A"
         scores_dict = {"C1_Originality": c1, "C2_Methodological_Rigor": c2, "C3_Interdisciplinary": c3, "C4_Societal_Impact": c4, "C5_Open_Science_Potential": c5, "C6_Literature_Integration": c6, "C7_Empirical_Density": c7, "C8_Future_Actionability": c8}
-        
         return title, score, drift, rec, fields, subfields, scores_dict
 
-    # Extract all pages
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     text = " ".join([page.get_text() for page in doc]) 
     
-    # Rate Limit & Payload Size Error Handling Fallback
     try:
         raw_data = evaluate_pdf_text(text, scope, PRIMARY_MODEL, MAX_TEXT_TOKENS)
         model_used = PRIMARY_MODEL
     except Exception as e:
         st.warning(f"Primary model hit a limit/error. Failing over to {FALLBACK_MODEL}...")
         try:
-            # If the error is specific to payload size (413 or TPM limit), halve the payload for safety
             reduced_limit = MAX_TEXT_TOKENS // 2 if 'limit' in str(e).lower() or '413' in str(e) else MAX_TEXT_TOKENS
             raw_data = evaluate_pdf_text(text, scope, FALLBACK_MODEL, reduced_limit)
             model_used = FALLBACK_MODEL
@@ -217,7 +267,6 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
             st.error(f"Both models failed. API Error: {str(e2)}")
             return "Extraction Failed", 0.0, "N/A", "N/A", ["Unknown"], ["Unknown"], {k: 0.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]}
         
-    # Increment and grab global evaluations
     cursor.execute("UPDATE global_eval_counter SET count = count + 1")
     cursor.execute("SELECT count FROM global_eval_counter")
     total_evals = cursor.fetchone()[0]
@@ -226,10 +275,11 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     epoch_data = cursor.fetchone()
     block_height, previous_hash, old_weights = epoch_data[0], epoch_data[1], epoch_data[2:]
     
-    scores_dict = raw_data.get("scores", {})
-    scores = [scores_dict.get(k, 50.0) for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]]
+    # Mathematical computation using Extracted Variables and Blockchain Weights
+    variables = raw_data.get("variables", {})
+    scores_dict = compute_formulaic_criteria(variables, old_weights)
+    scores = [scores_dict[k] for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]]
     
-    # Process epoch progression purely every 10 complete paper analyzes globally
     if total_evals % 10 == 0:
         new_weights = calculate_model_driven_weights(old_weights, scores, model_used, block_height)
         timestamp = datetime.now().isoformat()
@@ -242,7 +292,9 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     scope_alignment = raw_data.get("Scope_Alignment", 0.0)
     title = raw_data.get("Extracted_Title", filename)
     fields, subfields = raw_data.get("fields", ["General Science"]), raw_data.get("subfields", ["General"])
-    final_score = float(np.dot(scores, new_weights)) / 8.0
+    
+    # Final Score is average of the formulaically derived criterion scores
+    final_score = float(np.mean(scores))
     
     drift = calculate_complex_drift(scope_alignment, scores) if scope.strip() else "N/A"
     rec = get_recommendation_spectrum(final_score, drift) if scope.strip() else "N/A"
@@ -256,7 +308,6 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
 # --- 4. TOPOLOGICAL MAPPING (INTERACTIVE PYVIS NETWORK) ---
 def generate_interactive_bubble_chart(scope, user_id):
     cursor = conn.cursor()
-    # If scope is empty, we still query by exactly that empty string
     cursor.execute("SELECT fields, subfields, final_score FROM papers_assessment WHERE scope=? AND user_id=?", (scope, user_id))
     data = cursor.fetchall()
     
@@ -419,7 +470,6 @@ with tab1:
         if not uploaded_files:
             st.warning("⚠️ Please upload at least one academic paper (PDF) to proceed.")
         else:
-            # Clear user's bubble cache before processing new batch
             cursor = conn.cursor()
             cursor.execute("DELETE FROM papers_assessment WHERE user_id=?", (current_user,))
             conn.commit()
@@ -437,7 +487,6 @@ with tab1:
                 
                 combined_fields = f"Fields: {', '.join(fields)} | Subfields: {', '.join(subfields)}"
                 
-                # Base structure of a record
                 record = {
                     "No.": i + 1,
                     "File Name": file.name,
@@ -445,22 +494,20 @@ with tab1:
                     "π-Index (0-100)": round(score, 1),
                 }
                 
-                # Append Scope-specific columns only if a scope was provided
                 if research_scope.strip():
                     record["Topic"] = research_scope
                     record["Recommendation Spectrum"] = rec
                     record["Scope Drift %"] = round(drift, 1) if drift != "N/A" else "N/A"
                     
-                # Append C1-C8 criteria scores
                 record.update({
-                    "C1": scores_dict.get("C1_Originality", 0.0),
-                    "C2": scores_dict.get("C2_Methodological_Rigor", 0.0),
-                    "C3": scores_dict.get("C3_Interdisciplinary", 0.0),
-                    "C4": scores_dict.get("C4_Societal_Impact", 0.0),
-                    "C5": scores_dict.get("C5_Open_Science_Potential", 0.0),
-                    "C6": scores_dict.get("C6_Literature_Integration", 0.0),
-                    "C7": scores_dict.get("C7_Empirical_Density", 0.0),
-                    "C8": scores_dict.get("C8_Future_Actionability", 0.0)
+                    "C1": round(scores_dict.get("C1_Originality", 0.0), 1),
+                    "C2": round(scores_dict.get("C2_Methodological_Rigor", 0.0), 1),
+                    "C3": round(scores_dict.get("C3_Interdisciplinary", 0.0), 1),
+                    "C4": round(scores_dict.get("C4_Societal_Impact", 0.0), 1),
+                    "C5": round(scores_dict.get("C5_Open_Science_Potential", 0.0), 1),
+                    "C6": round(scores_dict.get("C6_Literature_Integration", 0.0), 1),
+                    "C7": round(scores_dict.get("C7_Empirical_Density", 0.0), 1),
+                    "C8": round(scores_dict.get("C8_Future_Actionability", 0.0), 1)
                 })
                 
                 results.append(record)
