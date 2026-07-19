@@ -20,12 +20,12 @@ PRIMARY_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "llama-3.1-8b-instant"
 MAX_TEXT_TOKENS = 6000
 EPOCH_HOURS = 24  # Trigger new blockchain epoch every 24h
-BLOCKCHAIN_DIFFICULTY = 3 # Number of leading zeros required for PoW hash
 SEED_NUMBER = 42
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
 os.makedirs(BASE_DIR, exist_ok=True)
-DB_PATH = os.path.join(BASE_DIR, 'pi_index_assessment_v4.db')
+# Updated DB name for Proof of Stake migration
+DB_PATH = os.path.join(BASE_DIR, 'pi_index_assessment_v5_pos.db')
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 if not GROQ_API_KEY:
@@ -33,16 +33,13 @@ if not GROQ_API_KEY:
     st.stop()
 client = Groq(api_key=GROQ_API_KEY)
 
-# --- 2. BLOCKCHAIN & DATABASE INITIALIZATION ---
-def mine_block(block_index, weights, timestamp, previous_hash):
-    """Performs Proof-of-Work to find a valid block hash."""
-    nonce = 0
-    while True:
-        data = f"{block_index}{weights}{timestamp}{previous_hash}{nonce}".encode('utf-8')
-        block_hash = hashlib.sha256(data).hexdigest()
-        if block_hash.startswith("0" * BLOCKCHAIN_DIFFICULTY):
-            return nonce, block_hash
-        nonce += 1
+# --- 2. BLOCKCHAIN (PROOF OF STAKE) & DATABASE INITIALIZATION ---
+def validate_block_pos(block_index, weights, timestamp, previous_hash):
+    """Simulates Proof-of-Stake validation to generate a block hash."""
+    validator_node = "Validator_Pi_" + hashlib.md5(str(time.time()).encode()).hexdigest()[:6]
+    data = f"{block_index}{weights}{timestamp}{previous_hash}{validator_node}".encode('utf-8')
+    block_hash = hashlib.sha256(data).hexdigest()
+    return validator_node, block_hash
 
 @st.cache_resource
 def init_system():
@@ -56,36 +53,42 @@ def init_system():
                        scope_alignment REAL,
                        subfields TEXT, fields TEXT, final_score REAL, timestamp DATETIME)''')
                        
-    # Blockchain Ledger for Weights (Integers)
-    cursor.execute('''CREATE TABLE IF NOT EXISTS blockchain_weights 
+    # Blockchain Ledger for Weights (Proof of Stake)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS blockchain_pos_weights 
                       (block_height INTEGER PRIMARY KEY AUTOINCREMENT, 
                        w1 INTEGER, w2 INTEGER, w3 INTEGER, w4 INTEGER, 
                        w5 INTEGER, w6 INTEGER, w7 INTEGER, w8 INTEGER, 
                        timestamp DATETIME, previous_hash TEXT, 
-                       nonce INTEGER, block_hash TEXT)''')
+                       validator_node TEXT, block_hash TEXT)''')
     
-    cursor.execute("SELECT COUNT(*) FROM blockchain_weights")
+    cursor.execute("SELECT COUNT(*) FROM blockchain_pos_weights")
     if cursor.fetchone()[0] == 0:
-        # Create Genesis Block (Equal integer distribution: 125 * 8 = 1000)
-        genesis_weights = [125] * 8
+        # Create Genesis Block (Integers summing to 3141, derived from Pi=3.141)
+        base = 3141 // 8
+        genesis_weights = [base] * 8
+        genesis_weights[-1] += (3141 - sum(genesis_weights)) # Remainder
+        
         prev_hash = "0" * 64
         timestamp = datetime.now().isoformat()
-        nonce, block_hash = mine_block(1, genesis_weights, timestamp, prev_hash)
+        val_node, block_hash = validate_block_pos(1, genesis_weights, timestamp, prev_hash)
         
-        cursor.execute('''INSERT INTO blockchain_weights 
-                          (w1, w2, w3, w4, w5, w6, w7, w8, timestamp, previous_hash, nonce, block_hash) 
+        cursor.execute('''INSERT INTO blockchain_pos_weights 
+                          (w1, w2, w3, w4, w5, w6, w7, w8, timestamp, previous_hash, validator_node, block_hash) 
                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
-                       (*genesis_weights, timestamp, prev_hash, nonce, block_hash))
+                       (*genesis_weights, timestamp, prev_hash, val_node, block_hash))
     conn.commit()
     return conn
 
 conn = init_system()
 
-# --- 3. RECURSIVE ENTROPY WEIGHT METHOD (TO INTEGER CONSTANTS) ---
+# --- 3. RECURSIVE ENTROPY WEIGHT METHOD (DERIVED FROM PI) ---
 def calculate_ewm_integers(matrix):
     m, n = matrix.shape
     if m <= 1:
-        return [125] * 8
+        base = 3141 // n
+        weights = [base] * n
+        weights[-1] += (3141 - sum(weights))
+        return weights
     
     norm_matrix = np.zeros_like(matrix)
     for j in range(n):
@@ -110,16 +113,16 @@ def calculate_ewm_integers(matrix):
     else:
         float_weights = d / d_sum
 
-    # Convert to Integer Constants (summing exactly to 1000)
-    int_weights = [int(round(w * 1000)) for w in float_weights]
-    diff = 1000 - sum(int_weights)
-    int_weights[-1] += diff # Adjust last integer to ensure perfect 1000 sum
+    # Convert to Integer Constants (summing exactly to 3141, derived from Pi)
+    int_weights = [int(round(w * 3141)) for w in float_weights]
+    diff = 3141 - sum(int_weights)
+    int_weights[-1] += diff 
     
     return int_weights
 
 def trigger_blockchain_epoch():
     cursor = conn.cursor()
-    cursor.execute("SELECT block_height, block_hash, timestamp FROM blockchain_weights ORDER BY block_height DESC LIMIT 1")
+    cursor.execute("SELECT block_height, block_hash, timestamp FROM blockchain_pos_weights ORDER BY block_height DESC LIMIT 1")
     last_block = cursor.fetchone()
     last_block_height, previous_hash, last_timestamp = last_block[0], last_block[1], last_block[2]
     last_epoch_date = datetime.fromisoformat(last_timestamp)
@@ -134,13 +137,13 @@ def trigger_blockchain_epoch():
             timestamp = datetime.now().isoformat()
             new_height = last_block_height + 1
             
-            # Mine new block
-            nonce, block_hash = mine_block(new_height, new_int_weights, timestamp, previous_hash)
+            # Validate new PoS block
+            val_node, block_hash = validate_block_pos(new_height, new_int_weights, timestamp, previous_hash)
             
-            cursor.execute('''INSERT INTO blockchain_weights 
-                              (w1, w2, w3, w4, w5, w6, w7, w8, timestamp, previous_hash, nonce, block_hash) 
+            cursor.execute('''INSERT INTO blockchain_pos_weights 
+                              (w1, w2, w3, w4, w5, w6, w7, w8, timestamp, previous_hash, validator_node, block_hash) 
                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
-                           (*new_int_weights, timestamp, previous_hash, nonce, block_hash))
+                           (*new_int_weights, timestamp, previous_hash, val_node, block_hash))
             conn.commit()
 
 # --- 4. SEMANTIC LLM EXTRACTION & MATHEMATICAL DRIFT ---
@@ -225,8 +228,7 @@ def process_single_pdf(file_bytes, filename, scope):
         time.sleep(2)
         raw_data = evaluate_pdf_text(text, scope, FALLBACK_MODEL)
         
-    # Get Current Blockchain Weights (Integers)
-    cursor.execute("SELECT w1, w2, w3, w4, w5, w6, w7, w8 FROM blockchain_weights ORDER BY block_height DESC LIMIT 1")
+    cursor.execute("SELECT w1, w2, w3, w4, w5, w6, w7, w8 FROM blockchain_pos_weights ORDER BY block_height DESC LIMIT 1")
     int_weights = cursor.fetchone()
     
     scores_dict = raw_data.get("scores", {})
@@ -237,8 +239,8 @@ def process_single_pdf(file_bytes, filename, scope):
     fields = raw_data.get("fields", ["General Science"])
     subfields = raw_data.get("subfields", ["General"])
     
-    # Apply Integer Constants to Criteria (Divided by 1000 to normalize back to 0-100 scale)
-    final_score = float(np.dot(scores, int_weights)) / 1000.0
+    # Calculate final score via dot product with Pi-derived integers, then normalize
+    final_score = float(np.dot(scores, int_weights)) / 3141.0
     drift = calculate_complex_drift(scope_alignment, scores)
     
     cursor.execute('''INSERT INTO papers_assessment 
@@ -307,9 +309,10 @@ def generate_bubble_chart(scope):
         size = row['bubble_size']
         count = row['count']
         
+        # Labels stripped off the bubbles, leaving only color mapping and hover info
         fig.add_trace(go.Scatter(
             x=[row['x']], y=[row['y']],
-            mode='markers+text',
+            mode='markers',
             marker=dict(
                 size=size,
                 color=color_palette[i % len(color_palette)],
@@ -318,9 +321,6 @@ def generate_bubble_chart(scope):
                 gradient=dict(type='radial', color='rgba(255, 255, 255, 0.85)'),
                 opacity=0.95
             ),
-            text=topic if size > 45 else "",
-            textposition="middle center",
-            textfont=dict(color='#2c3e50', size=11, family="Arial Black"),
             name=topic, 
             hovertext=f"<b>{topic}</b><br>Category: {row['category']}<br>Focus Frequency: {count}",
             hoverinfo="text"
@@ -373,7 +373,7 @@ with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
         st.markdown("**C8: Future Actionability**  \nDetermines theoretical continuation potential using Lyapunov exponents on phase space logistics.")
         st.markdown(r"$$F_a = \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\mathbf{x}) \times 100$$")
 
-tab1, tab2, tab3 = st.tabs(["Batch Assessment", "Scope Cartography", "Blockchain Weight Ledger"])
+tab1, tab2, tab3 = st.tabs(["Batch Assessment", "Scope Cartography", "Active Epoch Integer Constants"])
 
 with tab1:
     research_scope = st.text_input("Define your specific Research Topic / Scope", placeholder="e.g., Application of deep learning in vascular imaging...")
@@ -437,29 +437,28 @@ with tab2:
         st.info("Please define a research scope in the 'Batch Assessment' tab first.")
 
 with tab3:
-    st.subheader("Cryptographic Epoch Ledger (PoW)")
-    st.write("The integer constants below sum exactly to 1000. They are multiplied against paper criteria scores and divided by 1000 to determine the final π-Index. A new block is mined every 24 hours based on the latest recursive entropy.")
-    
     cursor = conn.cursor()
-    cursor.execute("SELECT block_height, block_hash, previous_hash, nonce, timestamp, w1, w2, w3, w4, w5, w6, w7, w8 FROM blockchain_weights ORDER BY block_height DESC LIMIT 1")
-    block_data = cursor.fetchone()
+    cursor.execute("SELECT w1, w2, w3, w4, w5, w6, w7, w8 FROM blockchain_pos_weights ORDER BY block_height DESC LIMIT 1")
+    weights = cursor.fetchone()
     
-    if block_data:
-        b_height, b_hash, p_hash, nonce, ts = block_data[0:5]
-        weights = block_data[5:]
-        
-        st.markdown(f"**Block Height:** `{b_height}` | **Mined Timestamp:** `{ts}`")
-        st.markdown(f"**Block Hash:** `{b_hash}`")
-        st.markdown(f"**Previous Hash:** `{p_hash}`")
-        st.markdown(f"**Proof of Work Nonce:** `{nonce}`")
-        
-        st.markdown("---")
-        st.markdown("### Active Epoch Integer Constants")
+    if weights:
         cols = st.columns(4)
-        labels = ["C1 Originality", "C2 Method Rigor", "C3 Interdisciplinary", "C4 Societal Impact", "C5 Open Science", "C6 Lit Integration", "C7 Empirical Density", "C8 Actionability"]
+        labels = [
+            "C1 Originality (O)", 
+            "C2 Method Rigor (R)", 
+            "C3 Interdisciplinary (I)", 
+            "C4 Societal Impact (S)", 
+            "C5 Open Science (O_s)", 
+            "C6 Lit Integration (L)", 
+            "C7 Empirical Density (E_d)", 
+            "C8 Actionability (F_a)"
+        ]
         
         for i, col in enumerate(cols * 2):
-            if i < 8: col.metric(labels[i], f"{weights[i]} / 1000")
+            if i < 8: 
+                col.markdown(f"**{labels[i]}**")
+                col.markdown(f"<h3 style='margin-top:0px; margin-bottom:5px;'>{weights[i]}</h3>", unsafe_allow_html=True)
+                col.markdown("<p style='color:gray; font-size: 0.85em;'>an integer that is derived from Pi=3.14 and saved on blockchain hash with proof of stake</p>", unsafe_allow_html=True)
 
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
