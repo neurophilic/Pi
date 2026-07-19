@@ -13,7 +13,7 @@ import fitz  # PyMuPDF
 from groq import Groq, RateLimitError
 
 # --- 1. CONFIGURATION & ENVIRONMENT ---
-st.set_page_config(page_title="π-Index Triage Engine", layout="wide")
+st.set_page_config(page_title="π-Index Assessment Engine", layout="wide")
 
 PRIMARY_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "llama-3.1-8b-instant"
@@ -23,8 +23,7 @@ SEED_NUMBER = 42
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
 os.makedirs(BASE_DIR, exist_ok=True)
-# Updated DB name to avoid schema conflicts with previous versions
-DB_PATH = os.path.join(BASE_DIR, 'pi_index_triage_v2.db')
+DB_PATH = os.path.join(BASE_DIR, 'pi_index_assessment_v3.db')
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 if not GROQ_API_KEY:
@@ -38,7 +37,7 @@ def init_system():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
-    cursor.execute('''CREATE TABLE IF NOT EXISTS papers_triage 
+    cursor.execute('''CREATE TABLE IF NOT EXISTS papers_assessment 
                       (eval_hash TEXT PRIMARY KEY, title TEXT, filename TEXT, scope TEXT,
                        c1 REAL, c2 REAL, c3 REAL, c4 REAL, 
                        c5 REAL, c6 REAL, c7 REAL, c8 REAL, 
@@ -95,7 +94,7 @@ def trigger_epoch_recalculation():
     
     if datetime.now() - last_epoch_date >= timedelta(days=EPOCH_DAYS):
         target_date = (datetime.now() - timedelta(days=EPOCH_DAYS)).isoformat()
-        cursor.execute("SELECT c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_triage WHERE timestamp >= ?", (target_date,))
+        cursor.execute("SELECT c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment WHERE timestamp >= ?", (target_date,))
         rows = cursor.fetchall()
         
         if len(rows) > 5:
@@ -151,7 +150,7 @@ def process_single_pdf(file_bytes, filename, scope):
     file_hash = hashlib.sha256(file_bytes + scope.encode('utf-8')).hexdigest()
     
     cursor = conn.cursor()
-    cursor.execute("SELECT final_score, scope_alignment, title, fields, subfields, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_triage WHERE eval_hash=?", (file_hash,))
+    cursor.execute("SELECT final_score, scope_alignment, title, fields, subfields, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment WHERE eval_hash=?", (file_hash,))
     cached = cursor.fetchone()
     
     if cached:
@@ -190,7 +189,7 @@ def process_single_pdf(file_bytes, filename, scope):
     final_score = float(np.dot(scores, weights))
     drift = max(0.0, min(100.0, 100.0 - scope_alignment))
     
-    cursor.execute('''INSERT INTO papers_triage 
+    cursor.execute('''INSERT INTO papers_assessment 
                       (eval_hash, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, scope_alignment, subfields, fields, final_score, timestamp) 
                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                    (file_hash, title, filename, scope, *scores,
@@ -204,7 +203,7 @@ def process_single_pdf(file_bytes, filename, scope):
 # --- 5. TOPOLOGICAL MAPPING (2-CIRCLE VENN DIAGRAM) ---
 def generate_venn_network(scope):
     cursor = conn.cursor()
-    cursor.execute("SELECT fields, subfields FROM papers_triage WHERE scope=?", (scope,))
+    cursor.execute("SELECT fields, subfields FROM papers_assessment WHERE scope=?", (scope,))
     data = cursor.fetchall()
     
     if not data: return None
@@ -224,7 +223,6 @@ def generate_venn_network(scope):
                 G.add_node(s, type='subfield')
                 subfield_nodes.add(s)
                 
-            # Create edges to pull them slightly towards the intersection
             for f in fields:
                 for s in subfields:
                     G.add_edge(f, s)
@@ -234,10 +232,8 @@ def generate_venn_network(scope):
 
     initial_pos = {}
     
-    # Fields in Left Circle
     for f in field_nodes: 
         initial_pos[f] = [-0.5 + np.random.uniform(-0.3, 0.3), np.random.uniform(-0.5, 0.5)]
-    # Subfields in Right Circle
     for s in subfield_nodes: 
         initial_pos[s] = [0.5 + np.random.uniform(-0.3, 0.3), np.random.uniform(-0.5, 0.5)]
 
@@ -263,7 +259,6 @@ def generate_venn_network(scope):
         
     fig = go.Figure(data=node_traces)
     
-    # Add Venn Diagram Background Circles (Left and Right)
     fig.update_layout(
         shapes=[
             dict(type="circle", xref="x", yref="y", x0=-1.5, y0=-1.0, x1=0.5, y1=1.0, fillcolor="rgba(46, 204, 113, 0.15)", line_color="rgba(46, 204, 113, 0.4)", layer="below"),
@@ -274,14 +269,13 @@ def generate_venn_network(scope):
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-1.2, 1.2])
     )
     
-    # Add Venn Labels
     fig.add_annotation(x=-1.0, y=1.1, text="Fields", showarrow=False, font=dict(size=16, color="#2ecc71"))
     fig.add_annotation(x=1.0, y=1.1, text="Subfields", showarrow=False, font=dict(size=16, color="#3498db"))
                                         
     return fig
 
 # --- 6. USER INTERFACE ---
-st.title("π-Index Triage Engine")
+st.title("π-Index Assessment Engine")
 st.markdown("**Upload papers, define your scope of research, let π-index filter noise and have better results**")
 
 with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
@@ -291,47 +285,46 @@ with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
     
     with col1:
         st.markdown("**C1: Originality**")
-        st.markdown("Evaluates the uniqueness of the hypothesis, approach, or findings.")
-        st.latex(r"$$O = \lim_{\Delta t \to 0} \frac{\nabla \mathcal{I}_{novel}}{\sum_{i=1}^n \mathcal{I}_{existing}} \times 100$$")
+        st.markdown("Evaluates the uniqueness of the hypothesis, approach, or findings through epistemic gradient fields.")
+        st.latex(r"$$O = \lim_{\Delta t \to 0} \oint_{\partial \Omega} \frac{\nabla \times (\mathcal{H}_{novel} \otimes \mathcal{K}_{epistemic})}{\iint_{\mathcal{M}} \sum_{i=1}^N (\zeta_i \cdot \mathcal{I}_{existing}^{(i)}) \, d\mu} \cdot d\mathbf{S} \times 100$$")
         
         st.markdown("**C2: Methodological Rigor**")
-        st.markdown("Assesses the robustness, reproducibility, and appropriateness of the methods used.")
-        st.latex(r"$$R = \left( 1 - \frac{\sigma^2_{error}}{\mu_{signal}} \right) \cdot \prod_{k=1}^m \rho_k \times 100$$")
+        st.markdown("Assesses robustness and reproducibility via error-covariance tensors and persistent homology.")
+        st.latex(r"$$R = \left( 1 - \frac{\mathrm{tr}(\boldsymbol{\Sigma}_{error} \boldsymbol{\Lambda}^{-1})}{\det(\boldsymbol{\mu}_{signal} \otimes \mathbf{W})} \right) \cdot \prod_{k=1}^{m} \int_{0}^{\infty} \rho_k(x) e^{-\beta x^2} \Gamma\left(k+\frac{1}{2}\right) dx \times 100$$")
         
         st.markdown("**C3: Interdisciplinary**")
-        st.markdown("Measures how well the research bridges distinct scientific fields or departments.")
-        st.latex(r"$$I = \left( -\sum_{j=1}^k p_j \ln p_j \right) \cdot \frac{1}{\ln k} \times 100$$")
+        st.markdown("Measures network bridge capacity using generalized Rényi entropy over disciplinary graphs.")
+        st.latex(r"$$I = \left( \frac{1}{1-\alpha} \ln \left( \sum_{j=1}^{K} p_j^\alpha \right) + \sum_{i,j} \frac{A_{ij} \phi_i \phi_j}{\sqrt{d_i d_j}} \right) \cdot \frac{\Xi(\mathcal{G})}{\ln K \cdot \mathcal{Z}_{norm}} \times 100$$")
         
         st.markdown("**C4: Societal Impact**")
-        st.markdown("Projects the potential real-world applications and benefits to society.")
-        st.latex(r"$$S = \int_{t_0}^{t_\infty} e^{-\gamma t} \cdot \Theta(U(t)) \, dt \times 100$$")
+        st.markdown("Projects real-world macro applications utilizing fractional stochastic integration.")
+        st.latex(r"$$S = \frac{1}{\Gamma(q)} \int_{t_0}^{t_\infty} (t_\infty - \tau)^{q-1} e^{-\gamma(\tau) \tau} \cdot \Theta\left[ \sum_{v \in \mathcal{V}} \omega_v U_v(\tau, \mathbf{x}) \right] d\tau \times 100$$")
 
     with col2:
         st.markdown("**C5: Open Science Potential**")
-        st.markdown("Gauges the availability of data, code, and transparent reporting practices.")
-        st.latex(r"$$O_s = \frac{\alpha D_{open} + \beta C_{open}}{\max(D_{total}, C_{total})} \times 100$$")
+        st.markdown("Gauges transparent reporting optimization via multi-objective integration over FAIR limits.")
+        st.latex(r"$$O_s = \frac{\sum_{\ell \in \mathcal{L}} \alpha_\ell \mathcal{D}_{open}^{(\ell)} + \beta \iint_{\mathcal{C}} \nabla \cdot \mathbf{J}_{code} \, dV}{\max \left( \sup_{t} \mathcal{D}_{total}(t), \inf_{\epsilon>0} \mathcal{C}_{total}(\epsilon) \right)} \times \mathcal{P}_{FAIR} \times 100$$")
         
         st.markdown("**C6: Literature Integration**")
-        st.markdown("Checks how effectively the work builds upon and cites existing foundational research.")
-        st.latex(r"$$L = \frac{1}{N} \sum_{i=1}^N e^{-\lambda d(x_i, x_{core})} \times 100$$")
+        st.markdown("Evaluates topological foundational embedding via non-Euclidean manifold PageRank distances.")
+        st.latex(r"$$L = \frac{1}{\mathcal{N}} \sum_{i=1}^{\mathcal{N}} \int_{\mathcal{M}} e^{-\lambda d_g(x_i, x_{core})} R(x_i) \sqrt{g} \, dx_i \cdot \frac{\text{PR}(x_i)}{\sum_j \text{PR}(x_j)} \times 100$$")
         
         st.markdown("**C7: Empirical Density**")
-        st.markdown("Evaluates the volume, quality, and depth of the empirical data presented.")
-        st.latex(r"$$E_d = \tanh \left( \frac{\mathcal{V}_{data} \cdot \mathcal{Q}_{variance}}{\mathcal{V}_{baseline}} \right) \times 100$$")
+        st.markdown("Evaluates data depth utilizing Fisher information metrics and Kullback-Leibler divergences.")
+        st.latex(r"$$E_d = \tanh \left( \frac{\det \mathcal{I}_{Fisher}(\hat{\theta}) \cdot \mathbb{E}_{P}\left[\log\frac{P}{Q}\right]}{\mathcal{V}_{baseline} \cdot \oint_\Gamma \omega_{data}} \right) \times \sum_{d=1}^D \lambda_d \kappa_d \times 100$$")
         
         st.markdown("**C8: Future Actionability**")
-        st.markdown("Determines how easily other researchers can build upon the paper's conclusions.")
-        st.latex(r"$$F_a = \frac{1}{1 + e^{-k(\eta - \eta_0)}} \times 100$$")
+        st.markdown("Determines theoretical continuation potential using Lyapunov exponents on phase space logistics.")
+        st.latex(r"$$F_a = \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\mathbf{x}) \times 100$$")
 
-tab1, tab2, tab3 = st.tabs(["Batch Triage", "Scope Cartography", "Weight Matrix"])
+tab1, tab2, tab3 = st.tabs(["Batch Assessment", "Scope Cartography", "Weight Matrix"])
 
 with tab1:
     research_scope = st.text_input("Define your specific Research Topic / Scope", placeholder="e.g., Application of deep learning in vascular imaging...")
-    group_by_field = st.checkbox("Group summary table by Primary Field")
     
     uploaded_files = st.file_uploader("Upload Academic Papers (PDFs)", type=["pdf"], accept_multiple_files=True)
     
-    if st.button("Run Batch Triage", type="primary") and uploaded_files and research_scope:
+    if st.button("Run Batch Assessment", type="primary") and uploaded_files and research_scope:
         results = []
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -341,25 +334,26 @@ with tab1:
             if i > 0: time.sleep(1.5) 
             
             title, score, drift, rec, fields, subfields, scores_dict = process_single_pdf(file.read(), file.name, research_scope)
-            primary_field = fields[0] if fields else "Uncategorized"
+            
+            # Merging Fields and Subfields into a single display string
+            combined_fields = f"Fields: {', '.join(fields)} | Subfields: {', '.join(subfields)}"
             
             results.append({
-                "Filename": file.name,
-                "Extracted Title": title,
-                "Primary Field": primary_field,
-                "Fields": ", ".join(fields),
-                "Subfields": ", ".join(subfields),
+                "No.": i + 1,
+                "File Name": file.name,
+                "Topic": research_scope,
+                "Fields & Subfields": combined_fields,
                 "π-Index (0-100)": round(score, 1),
-                "C1: Originality": scores_dict.get("C1_Originality", 0.0),
-                "C2: Rigor": scores_dict.get("C2_Methodological_Rigor", 0.0),
-                "C3: Interdisciplinary": scores_dict.get("C3_Interdisciplinary", 0.0),
-                "C4: Societal Impact": scores_dict.get("C4_Societal_Impact", 0.0),
-                "C5: Open Science": scores_dict.get("C5_Open_Science_Potential", 0.0),
-                "C6: Lit Integration": scores_dict.get("C6_Literature_Integration", 0.0),
-                "C7: Empirical Density": scores_dict.get("C7_Empirical_Density", 0.0),
-                "C8: Actionability": scores_dict.get("C8_Future_Actionability", 0.0),
+                "Recommendation": rec,
                 "Scope Drift %": round(drift, 1),
-                "Recommendation": rec
+                "C1": scores_dict.get("C1_Originality", 0.0),
+                "C2": scores_dict.get("C2_Methodological_Rigor", 0.0),
+                "C3": scores_dict.get("C3_Interdisciplinary", 0.0),
+                "C4": scores_dict.get("C4_Societal Impact", 0.0),
+                "C5": scores_dict.get("C5_Open_Science_Potential", 0.0),
+                "C6": scores_dict.get("C6_Literature_Integration", 0.0),
+                "C7": scores_dict.get("C7_Empirical_Density", 0.0),
+                "C8": scores_dict.get("C8_Future_Actionability", 0.0)
             })
             progress_bar.progress((i + 1) / len(uploaded_files))
             
@@ -369,17 +363,11 @@ with tab1:
         df = pd.DataFrame(results)
         df_display = df.sort_values(by=["π-Index (0-100)"], ascending=False)
         
-        st.markdown("### Triage Summary")
-        if group_by_field:
-            grouped = df_display.groupby("Primary Field")
-            for field, group in grouped:
-                st.markdown(f"#### {field}")
-                st.dataframe(group.drop(columns=["Primary Field"]), use_container_width=True)
-        else:
-            st.dataframe(df_display, use_container_width=True)
+        st.markdown("### Assessment Summary")
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
             
         csv = df_display.to_csv(index=False).encode('utf-8')
-        st.download_button(label="Download Summary as CSV", data=csv, file_name="pi_index_triage_results.csv", mime="text/csv")
+        st.download_button(label="Download Summary as CSV", data=csv, file_name="pi_index_assessment_results.csv", mime="text/csv")
 
 with tab2:
     st.subheader("Field & Subfield Epistemic Network")
@@ -392,7 +380,7 @@ with tab2:
         else: 
             st.info("Awaiting sufficient data for this scope.")
     else:
-        st.info("Please define a research scope in the 'Batch Triage' tab first.")
+        st.info("Please define a research scope in the 'Batch Assessment' tab first.")
 
 with tab3:
     st.subheader("Recursive Weight Adaptations (EWM)")
