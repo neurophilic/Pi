@@ -1,4 +1,4 @@
-
+```python
 import os
 import sqlite3
 import json
@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import networkx as nx
 import plotly.graph_objects as go
+import plotly.express as px
 import streamlit as st
 import fitz  # PyMuPDF
 from groq import Groq, RateLimitError
@@ -106,7 +107,7 @@ def trigger_epoch_recalculation():
                            (*new_weights, datetime.now().isoformat()))
             conn.commit()
 
-# --- 4. SEMANTIC LLM EXTRACTION ---
+# --- 4. SEMANTIC LLM EXTRACTION & MATHEMATICAL DRIFT ---
 def evaluate_pdf_text(text, scope, model):
     prompt = f"""You are an expert peer reviewer contributing to the π-Index.
 The user is a researcher currently working on this specific project/scope: "{scope}"
@@ -140,13 +141,26 @@ Text: {text[:MAX_TEXT_TOKENS]}
     )
     return json.loads(response.choices[0].message.content)
 
-def get_recommendation(score, drift):
-    if drift > 50.0: 
-        return "Unrelated"
-    elif score >= 65.0: 
-        return "Recommended"
-    else: 
-        return "Borderline"
+def calculate_complex_drift(alignment, scores):
+    """Calculates non-linear epistemic drift mapped to criteria variance and alignment offset."""
+    mu = np.mean(scores)
+    sigma = np.std(scores)
+    delta = (100.0 - alignment) / 100.0
+    
+    # Utilizing logistic decay modified by standard deviation of quality to amplify structural divergence
+    drift_metric = 100.0 * (1.0 - np.exp(-3.0 * (delta ** 1.5) * (1.0 + (sigma / 100.0)) / (0.1 + (mu / 100.0))))
+    return float(max(0.0, min(100.0, drift_metric)))
+
+def get_recommendation_spectrum(score, drift):
+    """Generates a multi-tier continuous spectrum rather than static categories."""
+    synergy = score * (1.0 - (drift / 100.0)**1.5)
+    
+    if synergy >= 85: return "Tier I: Core Paradigm (Optimal Synergy)"
+    elif synergy >= 70: return "Tier II: Highly Aligned Framework"
+    elif synergy >= 55: return "Tier III: Moderately Synergistic"
+    elif synergy >= 40: return "Tier IV: Tangential Relevance"
+    elif synergy >= 25: return "Tier V: Epistemic Divergence"
+    else: return "Tier VI: Orthogonal / Unrelated Noise"
 
 def process_single_pdf(file_bytes, filename, scope):
     file_hash = hashlib.sha256(file_bytes + scope.encode('utf-8')).hexdigest()
@@ -159,14 +173,17 @@ def process_single_pdf(file_bytes, filename, scope):
         score, alignment, title, fields_str, subfields_str, c1, c2, c3, c4, c5, c6, c7, c8 = cached
         fields = json.loads(fields_str) if fields_str else ["General Science"]
         subfields = json.loads(subfields_str) if subfields_str else ["General"]
-        drift = max(0.0, min(100.0, 100.0 - alignment))
+        
+        scores_array = [c1, c2, c3, c4, c5, c6, c7, c8]
+        drift = calculate_complex_drift(alignment, scores_array)
+        
         scores_dict = {
             "C1_Originality": c1, "C2_Methodological_Rigor": c2,
             "C3_Interdisciplinary": c3, "C4_Societal_Impact": c4,
             "C5_Open_Science_Potential": c5, "C6_Literature_Integration": c6,
             "C7_Empirical_Density": c7, "C8_Future_Actionability": c8
         }
-        return title, score, drift, get_recommendation(score, drift), fields, subfields, scores_dict
+        return title, score, drift, get_recommendation_spectrum(score, drift), fields, subfields, scores_dict
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     text = " ".join([page.get_text() for page in doc[:3]])
@@ -189,7 +206,7 @@ def process_single_pdf(file_bytes, filename, scope):
     subfields = raw_data.get("subfields", ["General"])
     
     final_score = float(np.dot(scores, weights))
-    drift = max(0.0, min(100.0, 100.0 - scope_alignment))
+    drift = calculate_complex_drift(scope_alignment, scores)
     
     cursor.execute('''INSERT INTO papers_assessment 
                       (eval_hash, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, scope_alignment, subfields, fields, final_score, timestamp) 
@@ -200,9 +217,9 @@ def process_single_pdf(file_bytes, filename, scope):
     conn.commit()
     trigger_epoch_recalculation()
     
-    return title, final_score, drift, get_recommendation(final_score, drift), fields, subfields, scores_dict
+    return title, final_score, drift, get_recommendation_spectrum(final_score, drift), fields, subfields, scores_dict
 
-# --- 5. TOPOLOGICAL MAPPING (BUBBLE CHART) ---
+# --- 5. TOPOLOGICAL MAPPING (3D REALISTIC BUBBLE CHART) ---
 def generate_bubble_chart(scope):
     cursor = conn.cursor()
     cursor.execute("SELECT fields, subfields FROM papers_assessment WHERE scope=?", (scope,))
@@ -228,58 +245,66 @@ def generate_bubble_chart(scope):
     # Calculate frequencies
     df_topics = pd.DataFrame(all_topics)
     topic_counts = df_topics.groupby(['topic', 'category']).size().reset_index(name='count')
+    topic_counts = topic_counts.sort_values(by='count', ascending=False).reset_index(drop=True)
     
     # Normalize sizes for the bubbles
     max_count = topic_counts['count'].max()
-    min_size = 25
-    max_size = 80
+    min_size = 35
+    max_size = 110
     topic_counts['bubble_size'] = min_size + (topic_counts['count'] / max_count) * (max_size - min_size)
     
     # Create organic scatter positions
     np.random.seed(SEED_NUMBER)
-    topic_counts['x'] = np.random.normal(0, 1, len(topic_counts))
-    topic_counts['y'] = np.random.normal(0, 1, len(topic_counts))
+    topic_counts['x'] = np.random.normal(0, 1.5, len(topic_counts))
+    topic_counts['y'] = np.random.normal(0, 1.5, len(topic_counts))
     
-    # Add repulsion to avoid massive overlap
-    for _ in range(50):
+    # Add repulsion to avoid overlap
+    for _ in range(60):
         for i in range(len(topic_counts)):
             for j in range(len(topic_counts)):
                 if i != j:
                     dx = topic_counts.loc[i, 'x'] - topic_counts.loc[j, 'x']
                     dy = topic_counts.loc[i, 'y'] - topic_counts.loc[j, 'y']
                     dist = np.sqrt(dx**2 + dy**2)
-                    if dist < 0.5:
-                        topic_counts.loc[i, 'x'] += dx * 0.1
-                        topic_counts.loc[i, 'y'] += dy * 0.1
+                    if dist < 0.6:
+                        topic_counts.loc[i, 'x'] += dx * 0.15
+                        topic_counts.loc[i, 'y'] += dy * 0.15
     
     fig = go.Figure()
     
-    categories = {'Field': '#2ecc71', 'Subfield': '#3498db'}
+    # Use a broad qualitative color palette
+    color_palette = px.colors.qualitative.Bold + px.colors.qualitative.Pastel + px.colors.qualitative.Vivid
     
-    for cat, color in categories.items():
-        subset = topic_counts[topic_counts['category'] == cat]
-        if subset.empty: continue
+    # Map topics independently to legend and colors
+    for i, row in topic_counts.iterrows():
+        topic = row['topic']
+        size = row['bubble_size']
+        count = row['count']
         
+        # 3D Gradient effect styling
         fig.add_trace(go.Scatter(
-            x=subset['x'], y=subset['y'],
+            x=[row['x']], y=[row['y']],
             mode='markers+text',
             marker=dict(
-                size=subset['bubble_size'],
-                color=color,
-                line=dict(width=2, color='white'),
+                size=size,
+                color=color_palette[i % len(color_palette)],
+                line=dict(width=1, color='rgba(255, 255, 255, 0.4)'),
                 sizemode='diameter',
-                opacity=0.85
+                gradient=dict(type='radial', color='rgba(255, 255, 255, 0.85)'), # Realistic 3D glossy reflection
+                opacity=0.95
             ),
-            text=subset['topic'],
+            # Only display inline text if bubble is large enough to fit it
+            text=topic if size > 45 else "",
             textposition="middle center",
-            textfont=dict(color='white', size=11, family="Arial Black"),
-            name=cat,
-            hovertext=[f"Category: {cat}<br>Topic: {row['topic']}<br>Focus Frequency: {row['count']}" for _, row in subset.iterrows()],
+            textfont=dict(color='#2c3e50', size=11, family="Arial Black"),
+            name=topic, # Legend will display the specific Field/Subfield Name
+            hovertext=f"<b>{topic}</b><br>Category: {row['category']}<br>Focus Frequency: {count}",
             hoverinfo="text"
         ))
         
     fig.update_layout(
         showlegend=True,
+        legend_title_text='Fields & Subfields',
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         margin=dict(l=10, r=10, b=10, t=10),
@@ -351,7 +376,7 @@ with tab1:
                 "Topic": research_scope,
                 "Fields & Subfields": combined_fields,
                 "π-Index (0-100)": round(score, 1),
-                "Recommendation": rec,
+                "Recommendation Spectrum": rec,
                 "Scope Drift %": round(drift, 1),
                 "C1": scores_dict.get("C1_Originality", 0.0),
                 "C2": scores_dict.get("C2_Methodological_Rigor", 0.0),
@@ -405,3 +430,4 @@ with tab3:
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
 
+```
