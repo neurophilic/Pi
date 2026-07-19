@@ -3,14 +3,12 @@ import sqlite3
 import json
 import hashlib
 import time
-import tempfile
 import re
 import requests
 import colorsys
 from datetime import datetime
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 import streamlit.components.v1 as components
 import fitz  # PyMuPDF
@@ -22,7 +20,8 @@ st.set_page_config(page_title="π-Index Assessment Engine", layout="wide")
 
 PRIMARY_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "llama-3.1-8b-instant"
-MAX_TEXT_TOKENS = 300000  # Drastically increased to support full paper strings
+# Set to 32,000 to prevent groq.APIStatusError (Payload Too Large) while still capturing substantial text
+MAX_TEXT_TOKENS = 50000 
 SEED_NUMBER = 42
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
@@ -175,6 +174,11 @@ def calculate_model_driven_weights(old_weights, scores, model_name, block_height
 
 # --- 6. SEMANTIC EXTRACTION & DRIFT ---
 def evaluate_pdf_text(text, scope, model):
+    # Ensure text does not exceed the limit before sending
+    if len(text) > MAX_TEXT_TOKENS:
+        st.warning(f"Paper length exceeds API limits. Truncating to {MAX_TEXT_TOKENS} tokens...")
+        text = text[:MAX_TEXT_TOKENS]
+
     # Strict instructions to isolate score from scope entirely
     prompt = f"""You are a brutally critical expert peer reviewer contributing to the π-Index.
 
@@ -192,14 +196,28 @@ Return ONLY a valid JSON object matching exactly this structure:
     "fields": ["Field1", "Field2"], 
     "subfields": ["Subfield1"]
 }}
-Text: {text[:MAX_TEXT_TOKENS]}
+Text: {text}
 """
-    # LLM frozen with temperature 0.0 and explicit seed 42 to guarantee deterministic results
-    response = client.chat.completions.create(
-        messages=[{"role": "user", "content": prompt}],
-        model=model, temperature=0.0, seed=SEED_NUMBER, response_format={"type": "json_object"}
-    )
-    return json.loads(response.choices[0].message.content)
+    try:
+        # LLM frozen with temperature 0.0 and explicit seed 42 to guarantee deterministic results
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=model, 
+            temperature=0.0, 
+            seed=SEED_NUMBER, 
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+        
+    except Exception as e:
+        st.error(f"API Error during extraction: {str(e)}")
+        # Return a fallback default structure to keep the app running instead of crashing
+        return {
+            "Extracted_Title": "Extraction Failed / Unreadable Document",
+            "Scope_Alignment": 0,
+            "scores": {k: 50.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]},
+            "fields": ["Unknown Field"], "subfields": ["Unknown Subfield"]
+        }
 
 def calculate_complex_drift(alignment, scores):
     mu, sigma = np.mean(scores), np.std(scores)
@@ -217,7 +235,7 @@ def get_recommendation_spectrum(score, drift):
     return "Tier VI: Orthogonal / Unrelated Noise"
 
 def process_single_pdf(file_bytes, filename, scope, user_id):
-    # Hash now uniquely isolates the paper independent of the chosen scope
+    # Hash uniquely isolates the paper independent of the chosen scope
     file_hash = hashlib.sha256(file_bytes + user_id.encode('utf-8')).hexdigest()
     cursor = conn.cursor()
     cursor.execute("SELECT final_score, scope_alignment, title, fields, subfields, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment WHERE eval_hash=? AND user_id=?", (file_hash, user_id))
