@@ -24,9 +24,13 @@ FALLBACK_MODEL = "llama-3.1-8b-instant"
 MAX_TEXT_TOKENS = 12000 # ~2500 tokens to safely stay below the TPM limit
 SEED_NUMBER = 42
 
+# BLOCKCHAIN CONFIGURATION
+# Defines how many evaluations must occur before mining a new epoch block. 
+# Set to 1 for live testing updates. Change back to 10 for production.
+EPOCH_BLOCK_SIZE = 1 
+
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
 os.makedirs(BASE_DIR, exist_ok=True)
-# FIXED: Using a permanent DB name to stop the blockchain from resetting on version changes.
 DB_PATH = os.path.join(BASE_DIR, 'pi_index_main.db')
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
@@ -74,14 +78,13 @@ def init_system():
                       (eval_hash TEXT PRIMARY KEY, user_id TEXT, title TEXT, filename TEXT, scope TEXT,
                        c1 REAL, c2 REAL, c3 REAL, c4 REAL, 
                        c5 REAL, c6 REAL, c7 REAL, c8 REAL, 
-                       scope_alignment REAL,
+                       scope_alignment REAL, logic_score REAL,
                        subfields TEXT, fields TEXT, final_score REAL, timestamp DATETIME)''')
                        
-    # FIXED: Safe Schema Migration. Adds logic_score if it doesn't exist yet in an older DB.
     try:
         cursor.execute("ALTER TABLE papers_assessment ADD COLUMN logic_score REAL DEFAULT 0.0")
     except sqlite3.OperationalError:
-        pass # Column already exists
+        pass 
         
     cursor.execute('''CREATE TABLE IF NOT EXISTS blockchain_por_weights 
                       (block_height INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -137,10 +140,7 @@ def compute_logical_integrity(v):
     jumps = v.get('Logical_Jumps', 0.5)
     p_valid = v.get('Premise_Validity', 0.5)
     
-    # Mathematical Gap (Delta_Logic): Distance between evidence and conclusion
     gap = max(0.0, c_reach - e_str)
-    
-    # Exponential decay penalty
     logic_score = (p_valid * e_str) * np.exp(-(gap * 2.0 + jumps * 1.5)) * 100
     return max(0.0, min(100.0, logic_score))
 
@@ -162,7 +162,6 @@ def compute_formulaic_criteria(v):
     sum_lam = v.get('sum_lambda_kappa', 1.0)
     eta, Lambda = v.get('eta_steps', 2.0), v.get('Lambda_Lyapunov', 0.5)
 
-    # Computations mapped directly to LaTeX definitions
     c1_raw = ((H_novel * K_epi) / (zeta * I_ex + 0.1)) * 60
     scores["C1_Originality"] = min(100.0, max(0.0, c1_raw))
     
@@ -306,7 +305,7 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
         rec = get_recommendation_spectrum(score, drift) if scope.strip() else "N/A"
         scores_dict = {"C1_Originality": c1, "C2_Methodological_Rigor": c2, "C3_Interdisciplinary": c3, "C4_Societal_Impact": c4, "C5_Open_Science_Potential": c5, "C6_Literature_Integration": c6, "C7_Empirical_Density": c7, "C8_Future_Actionability": c8}
         
-        return title, score, logic_score, drift, rec, fields, subfields, scores_dict
+        return title, score, logic_score, drift, rec, fields, subfields, scores_dict, file_hash
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     text = " ".join([page.get_text() for page in doc]) 
@@ -322,7 +321,7 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
             model_used = FALLBACK_MODEL
         except Exception as e2:
             st.error(f"Both models failed. API Error: {str(e2)}")
-            return "Extraction Failed", 0.0, 0.0, "N/A", "N/A", ["Unknown"], ["Unknown"], {k: 0.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]}
+            return "Extraction Failed", 0.0, 0.0, "N/A", "N/A", ["Unknown"], ["Unknown"], {k: 0.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]}, "Failed"
         
     cursor.execute("UPDATE global_eval_counter SET count = count + 1")
     cursor.execute("SELECT count FROM global_eval_counter")
@@ -339,7 +338,8 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     logic_vars = raw_data.get("logic_analysis", {})
     logic_integrity = compute_logical_integrity(logic_vars)
 
-    if total_evals % 10 == 0:
+    # BLOCKCHAIN EVOLUTION CHECK (now configurable)
+    if total_evals % EPOCH_BLOCK_SIZE == 0:
         new_weights = calculate_model_driven_weights(old_weights, scores, model_used, block_height)
         timestamp = datetime.now().isoformat()
         val_node, block_hash = validate_block_por(block_height + 1, new_weights, timestamp, previous_hash, file_hash, model_used)
@@ -352,7 +352,6 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     title = raw_data.get("Extracted_Title", filename)
     fields, subfields = raw_data.get("fields", ["General Science"]), raw_data.get("subfields", ["General"])
     
-    # Mathematical integration: Base matrix dot product penalized by adversarial logic integrity
     raw_final_score = float(np.dot(scores, new_weights)) / 8.0
     final_score = float(raw_final_score * (0.7 + (logic_integrity / 333.3)))
     
@@ -363,7 +362,7 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     cursor.execute('''INSERT INTO papers_assessment (eval_hash, user_id, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, logic_score, scope_alignment, subfields, fields, final_score, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                    (file_hash, user_id, title, filename, scope, *scores, logic_integrity, scope_alignment, json.dumps(subfields), json.dumps(fields), final_score, timestamp))
     conn.commit()
-    return title, final_score, logic_integrity, drift, rec, fields, subfields, scores_dict
+    return title, final_score, logic_integrity, drift, rec, fields, subfields, scores_dict, file_hash
 
 # --- 4. TOPOLOGICAL MAPPING (INTERACTIVE PYVIS NETWORK) ---
 def generate_interactive_bubble_chart(scope, user_id):
@@ -547,7 +546,7 @@ with tab1:
             for i, file in enumerate(uploaded_files):
                 status_text.text(f"Analyzing {i+1} of {len(uploaded_files)}: {file.name}...")
                 
-                title, score, logic_integrity, drift, rec, fields, subfields, scores_dict = process_single_pdf(
+                title, score, logic_integrity, drift, rec, fields, subfields, scores_dict, eval_hash = process_single_pdf(
                     file.read(), file.name, research_scope, current_user
                 )
                 
@@ -556,6 +555,7 @@ with tab1:
                 record = {
                     "No.": i + 1,
                     "File Name": file.name,
+                    "Eval Hash (Document)": eval_hash,
                     "Fields & Subfields": combined_fields,
                     "Logic Integrity (%)": round(logic_integrity, 1),
                     "π-Index (0-100)": round(score, 1),
