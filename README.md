@@ -1,51 +1,43 @@
-# Scholarπ (ScholarPi)
+# Dynamic Epistemic Cartography
 
-**Automated Algorithmic Academic Rigor Analytics**
+**A Real-Time Multi-Criteria Scientometric Framework for Emerging Trend Detection and Institutional Assessment**
 
-Scholarπ is a production-ready, free-to-host web application that evaluates academic papers (PDFs) and calculates a comprehensive "π-Index" score. Moving beyond subjective LLM "vibes," Scholarπ uses Large Language Models strictly as **Data Extractors**, pulling boolean and integer variables from the text. The system then applies strict, transparent Python algorithms to calculate reliable, deterministic scores across 15 distinct evaluation criteria.
+Dynamic Epistemic Cartography is an advanced, AI-driven evaluation engine designed to map emerging scientific trends and dynamically assess research quality. Evolving from the static ScholarPi algorithmic system, this framework addresses the limitations of traditional, lagging bibliometric indicators (like citation counts and h-index) by leveraging Large Language Models (LLMs) and advanced Multi-Criteria Decision Analysis (MCDA).
 
----
-
-## Key Features
-
-* **AI as a Data Extractor:** The LLM reads the paper and extracts hard data (e.g., "Number of authors", "Mentions funding: True/False", "Citation count") via a strict JSON schema.
-* **Algorithmic Scoring:** Python functions map the AI-extracted variables into clamped 0.0–10.0 scores, guaranteeing mathematical transparency and preventing "rogue" AI scoring.
-* **Dynamic Few-Shot Learning:** The system queries its local SQLite database for its most recent successful run and injects it into the prompt. The AI continuously "learns" optimal JSON formatting from its own history.
-* **Smart Rate-Limit Fallback:** Deployed on Groq's free tier, the system catches `RateLimitError` exceptions and seamlessly downgrades from a 70B parameter model to an 8B instant model to ensure the UI never crashes.
-* **Persistent SQLite Caching:** Papers are hashed (`SHA-256`) and cached for 30 days. Re-evaluating the same paper is instantaneous and costs zero API credits.
-* **External Validation:** Integrates with the Semantic Scholar API to verify the novelty and saturation of the research topic in the real world.
+The system aligns directly with stringent national evaluation metrics, such as the Italian ANVUR Research Quality Evaluation (VQR), making it a powerful tool for institutions (e.g., Politecnico di Milano) to perform continuous, real-time portfolio optimization.
 
 ---
 
-## The 15 Evaluation Metrics
+## Core Features
 
-Scholarπ calculates scores across two main categories:
-
-**Core Criteria**
-* **S1 (CharDensity):** Vocabulary depth and sentence complexity.
-* **S2 (NumDensity):** Presence of empirical data, tables, and statistical tests.
-* **S3 (Reasoning):** Logical flow and handling of counter-arguments.
-* **S4 (CitationIntegration):** Literature review depth and citation support.
-* **S4b (CitationVolume):** Total citation volume.
-* **S5 (AuthorDiversity):** Collaborative spread (authors and institutions).
-* **S6 (Expertise):** Domain terminology and methodological rigor.
-* **S7 (Novelty):** Explicitly stated innovations and new contributions.
-* **S8 (Suggestions):** Actionability of future research directions.
-* **S9 (Fees):** Transparency regarding funding and conflicts of interest.
-* **S10 (Recency):** Timeliness of the paper's citations.
-* **S11 (FieldDiversity):** Interdisciplinary scope.
-* **S12 (Validation):** Sample sizes, methodology, and reproducibility.
-* **S13 (LogicalCoherence):** Document structure and readability.
-
-**External Discovery Metrics**
-* **S14 (WebGroundedUniqueness):** Objective rarity based on a live Semantic Scholar API sweep.
-* **S15 (AuthorHIndex):** Evaluated author prominence.
+*   **VQR-Aligned Semantic Extraction:** Utilizes Groq's fast inference (Llama 3 models) to read PDF manuscripts and assess 8 critical dimensions of research quality, including Originality (Proxy for the Disruption Index $CD_t$), Methodological Rigor, and Societal Impact (Third Mission).
+*   **Entropy Weight Method (EWM):** Autonomously recalculates the mathematical weight of each evaluation criterion every 30 days. By measuring data dispersion (Shannon Entropy), the system rewards high-variance, disruptive frontiers and penalizes saturated metrics, effectively neutralizing Goodhart's Law.
+*   **Topological Trend Mapping:** Automatically generates a living spatial network graph of LLM-extracted keywords. Tracks keyword co-occurrence over 30-day epochs to visually detect the early convergence of disparate fields and emerging interdisciplinary frontiers.
+*   **Decentralized Caching:** Built-in SQLite database ensures that previously processed manuscripts are instantly retrieved without redundant API calls.
 
 ---
 
-## Installation & Local Setup
+## The Evaluation Matrix
 
-**1. Clone the repository**
+The framework synthesizes scientific evaluation into the following 8 dynamic criteria:
+
+1.  **$C_1$ Originality:** Disruption index proxy.
+2.  **$C_2$ Methodological Rigor:** Robustness and reproducibility.
+3.  **$C_3$ Interdisciplinary Synthesis:** Integration of distant domains.
+4.  **$C_4$ Societal Impact:** Real-world applicability (Third Mission).
+5.  **$C_5$ Open Science:** Transparent protocols and open data availability.
+6.  **$C_6$ Literature Integration:** Grounding claims in relevant literature.
+7.  **$C_7$ Empirical Density:** Data density relative to narrative.
+8.  **$C_8$ Future Actionability:** Clarity of future research vectors.
+
+---
+
+## Installation & Setup
+
+### 1. Prerequisites
+Ensure you have Python 3.9+ installed on your machine. You will also need a free [Groq API Key](https://console.groq.com/keys) to power the LLM extraction.
+
+### 2. Clone the Repository
 ```bash
-git clone [https://github.com/yourusername/scholar-pi.git](https://github.com/yourusername/scholar-pi.git)
-cd scholar-pi
+git clone [https://github.com/yourusername/dynamic-epistemic-cartography.git](https://github.com/yourusername/dynamic-epistemic-cartography.git)
+cd dynamic-epistemic-cartography
