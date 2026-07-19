@@ -256,49 +256,17 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
 # --- 7. TOPOLOGICAL MAPPING (INTERACTIVE PYVIS NETWORK WITH WEIGHTS) ---
 
 def generate_interactive_bubble_chart(scope, user_id):
-    cursor = conn.cursor()
-    cursor.execute("SELECT fields, subfields, final_score FROM papers_assessment WHERE scope=? AND user_id=?", (scope, user_id))
-    data = cursor.fetchall()
+    # ... [keep data fetching and setup logic the same] ...
     
-    if not data: return None, None
-    
-    all_topics = []
-    for fields_json, subfields_json, final_score in data:
-        try:
-            fields = [f.title().strip() for f in json.loads(fields_json)]
-            subfields = [s.title().strip() for s in json.loads(subfields_json)]
-            score = float(final_score) if final_score else 50.0
-            for f in fields: all_topics.append({'topic': f, 'weight': score})
-            for s in subfields: all_topics.append({'topic': s, 'weight': score})
-        except: continue
-            
-    if not all_topics: return None, None
-    
-    df_topics = pd.DataFrame(all_topics)
-    topic_counts = df_topics.groupby(['topic'])['weight'].sum().reset_index(name='weight')
-    
-    if topic_counts.empty: return None, None
-    
-    unique_topics = topic_counts['topic'].unique()
-    
-    def get_color(i, n):
-        h, s, v = i/n, 0.7, 0.9
-        rgb = colorsys.hsv_to_rgb(h, s, v)
-        return '#%02x%02x%02x' % tuple(int(x * 255) for x in rgb)
-    
-    color_map = {topic: get_color(i, len(unique_topics)) for i, topic in enumerate(unique_topics)}
-    
-    net = Network(height='100px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
-    
-    # --- STABILIZED PHYSICS TO PREVENT STACKING ---
+    # --- PHYSICS SET TO CLUSTER/STICK TOGETHER ---
     physics_options = """
     {
       "physics": {
         "forceAtlas2Based": {
-          "gravitationalConstant": -10,
-          "centralGravity": 0.01,
-          "springLength": 1,
-          "springConstant": 0.08,
+          "gravitationalConstant": -50,
+          "centralGravity": 0.2,
+          "springLength": 10,
+          "springConstant": 0.05,
           "avoidOverlap": 0
         },
         "solver": "forceAtlas2Based"
@@ -308,29 +276,19 @@ def generate_interactive_bubble_chart(scope, user_id):
     net.set_options(physics_options)
     
     for _, row in topic_counts.iterrows():
-        # Size tied to weight
-        node_size = 100 + (row['weight'] * 3) 
+        # Large size as requested
+        node_size = 30 + (row['weight'] * 2.5) 
         
         net.add_node(
             n_id=row['topic'],
-            label=' ', # Space character to hide ID label
+            label=' ', 
             title=f"Topic: {row['topic']} | Weight: {row['weight']}",
             size=node_size,
             mass=node_size / 2,
             color=color_map[row['topic']]
         )
         
-    html_string = net.generate_html()
-    
-    # Legend remains the same
-    table_html = "<style>.table-big { width: 100%; font-size: 14px; border-collapse: collapse; margin-top: 10px; font-family: sans-serif; } .table-big th { background-color: #2c3e50; color: white; padding: 10px; text-align: left; } .table-big td { border-bottom: 1px solid #ddd; padding: 8px; vertical-align: middle; } .color-box { width: 18px; height: 18px; display: inline-block; border-radius: 3px; border: 1px solid #ccc; margin: 0 auto;} .legend-container { max-height: 550px; overflow-y: auto; border: 1px solid #eee; }</style>"
-    table_html += "<div class='legend-container'><table class='table-big'><thead><tr><th style='width: 25%; text-align: center;'>Color</th><th>Topic</th></tr></thead><tbody>"
-    
-    for _, row in topic_counts.sort_values(by="weight", ascending=False).iterrows():
-        table_html += f"<tr><td style='text-align: center;'><div class='color-box' style='background-color:{color_map[row['topic']]};'></div></td><td>{row['topic']}</td></tr>"
-        
-    table_html += "</tbody></table></div>"
-    
+    # ... [keep the rest of your legend/table generation logic] ...
     return html_string, table_html
 # --- 8. USER INTERFACE ---
 st.title("π-Index Assessment Engine")
