@@ -13,7 +13,7 @@ import fitz  # PyMuPDF
 from groq import Groq, RateLimitError
 
 # --- 1. CONFIGURATION & ENVIRONMENT ---
-st.set_page_config(page_title="Pi-Index XAI Batch Triage", page_icon="🏛️", layout="wide")
+st.set_page_config(page_title="Pi-Index XAI Batch Triage", layout="wide")
 
 PRIMARY_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "llama-3.1-8b-instant"
@@ -27,7 +27,7 @@ DB_PATH = os.path.join(BASE_DIR, 'merged_pi_index_xai.db')
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 if not GROQ_API_KEY:
-    st.error("⚠️ API Key not found! Please configure your environment variables or Streamlit Secrets.")
+    st.error("API Key not found! Please configure your environment variables or Streamlit Secrets.")
     st.stop()
 client = Groq(api_key=GROQ_API_KEY)
 
@@ -151,24 +151,30 @@ Text: {text[:MAX_TEXT_TOKENS]}
     return json.loads(response.choices[0].message.content)
 
 def get_recommendation(score, drift):
-    if score >= 6.5 and drift <= 30.0: return "🌟 Highly Recommended"
-    elif score >= 6.5 and drift > 30.0: return "⚠️ Read with Caution (Scope Drift)"
-    elif score < 6.5 and drift <= 30.0: return "🔍 Borderline (In Scope, Low Quality)"
-    else: return "🚫 Skip / Discard"
+    if score >= 6.5 and drift <= 30.0: return "Highly Recommended"
+    elif score >= 6.5 and drift > 30.0: return "Read with Caution (Scope Drift)"
+    elif score < 6.5 and drift <= 30.0: return "Borderline (In Scope, Low Quality)"
+    else: return "Skip / Discard"
 
 def process_single_pdf(file_bytes, filename, scope):
     file_hash = hashlib.sha256(file_bytes + scope.encode('utf-8')).hexdigest()
     
     cursor = conn.cursor()
-    cursor.execute("SELECT final_score, scope_alignment, title, rationale, departments FROM papers_triage WHERE eval_hash=?", (file_hash,))
+    cursor.execute("SELECT final_score, scope_alignment, title, rationale, departments, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_triage WHERE eval_hash=?", (file_hash,))
     cached = cursor.fetchone()
     
     if cached:
-        score, alignment, title, rationale_str, depts_str = cached
+        score, alignment, title, rationale_str, depts_str, c1, c2, c3, c4, c5, c6, c7, c8 = cached
         depts = json.loads(depts_str) if depts_str else ["General Science"]
         drift = max(0.0, min(100.0, (10.0 - alignment) * 10))
         rationale = json.loads(rationale_str) if rationale_str else {}
-        return title, score, drift, get_recommendation(score, drift), rationale, depts
+        scores_dict = {
+            "C1_Originality": c1, "C2_Methodological_Rigor": c2,
+            "C3_Interdisciplinary": c3, "C4_Societal_Impact": c4,
+            "C5_Open_Science_Potential": c5, "C6_Literature_Integration": c6,
+            "C7_Empirical_Density": c7, "C8_Future_Actionability": c8
+        }
+        return title, score, drift, get_recommendation(score, drift), rationale, depts, scores_dict
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     text = " ".join([page.get_text() for page in doc[:3]])
@@ -202,7 +208,7 @@ def process_single_pdf(file_bytes, filename, scope):
     conn.commit()
     trigger_epoch_recalculation()
     
-    return title, final_score, drift, get_recommendation(final_score, drift), rationale, depts
+    return title, final_score, drift, get_recommendation(final_score, drift), rationale, depts, scores_dict
 
 # --- 5. TOPOLOGICAL MAPPING (CENTERED NETWORK) ---
 def generate_centered_network(scope):
@@ -213,7 +219,7 @@ def generate_centered_network(scope):
     if not data: return None
     
     G = nx.Graph()
-    topic_node = f"🎯 {scope}"
+    topic_node = f"Topic: {scope}"
     G.add_node(topic_node, type='topic')
     
     for title, kw_json, dept_json in data:
@@ -267,14 +273,14 @@ def generate_centered_network(scope):
     ))
 
 # --- 6. USER INTERFACE ---
-st.title("📚 Pi-Index XAI Batch Triage Engine")
+st.title("Pi-Index XAI Batch Triage Engine")
 st.markdown("**Upload PDFs, define your scope, let the Pi-Index filter the noise, and explain its reasoning.**")
 
-tab1, tab2, tab3 = st.tabs(["📥 Batch Triage & XAI", "🌌 Scope Cartography", "⚙️ Weight Matrix"])
+tab1, tab2, tab3 = st.tabs(["Batch Triage & XAI", "Scope Cartography", "Weight Matrix"])
 
 with tab1:
-    research_scope = st.text_input("🎯 Define your specific Research Topic / Scope", placeholder="e.g., Use of transformer models for predicting protein folding...")
-    group_by_dept = st.checkbox("🏛️ Group summary table by Primary Scientific Department")
+    research_scope = st.text_input("Define your specific Research Topic / Scope", placeholder="e.g., Use of transformer models for predicting protein folding...")
+    group_by_dept = st.checkbox("Group summary table by Primary Scientific Department")
     
     uploaded_files = st.file_uploader("Upload Academic Papers (PDFs)", type=["pdf"], accept_multiple_files=True)
     
@@ -287,7 +293,7 @@ with tab1:
             status_text.text(f"Analyzing {i+1} of {len(uploaded_files)}: {file.name}...")
             if i > 0: time.sleep(1.5) 
             
-            title, score, drift, rec, rationale, depts = process_single_pdf(file.read(), file.name, research_scope)
+            title, score, drift, rec, rationale, depts, scores_dict = process_single_pdf(file.read(), file.name, research_scope)
             primary_dept = depts[0] if depts else "Uncategorized"
             
             results.append({
@@ -295,36 +301,44 @@ with tab1:
                 "Extracted Title": title,
                 "Primary Department": primary_dept,
                 "All Departments": ", ".join(depts),
-                "Pi-Index (0-10)": round(score, 3),
+                "Pi-Index": round(score, 3),
+                "C1: Originality": scores_dict.get("C1_Originality", 0.0),
+                "C2: Rigor": scores_dict.get("C2_Methodological_Rigor", 0.0),
+                "C3: Interdisciplinary": scores_dict.get("C3_Interdisciplinary", 0.0),
+                "C4: Societal Impact": scores_dict.get("C4_Societal_Impact", 0.0),
+                "C5: Open Science": scores_dict.get("C5_Open_Science_Potential", 0.0),
+                "C6: Lit Integration": scores_dict.get("C6_Literature_Integration", 0.0),
+                "C7: Empirical Density": scores_dict.get("C7_Empirical_Density", 0.0),
+                "C8: Actionability": scores_dict.get("C8_Future_Actionability", 0.0),
                 "Scope Drift %": round(drift, 1),
                 "Recommendation": rec,
                 "Rationale": rationale
             })
             progress_bar.progress((i + 1) / len(uploaded_files))
             
-        status_text.text("✅ Batch processing complete!")
+        status_text.text("Batch processing complete!")
         
         # DataFrame Processing
         df = pd.DataFrame(results)
         df_display = df.drop(columns=["Rationale"])  # Hide rationale from the main table
-        df_display = df_display.sort_values(by=["Recommendation", "Pi-Index (0-10)"], ascending=[False, False])
+        df_display = df_display.sort_values(by=["Recommendation", "Pi-Index"], ascending=[False, False])
         
-        st.markdown("### 📊 Triage Summary")
+        st.markdown("### Triage Summary")
         if group_by_dept:
             grouped = df_display.groupby("Primary Department")
             for dept, group in grouped:
-                st.markdown(f"#### 🏛️ {dept}")
+                st.markdown(f"#### {dept}")
                 st.dataframe(group.drop(columns=["Primary Department"]), use_container_width=True)
         else:
             st.dataframe(df_display, use_container_width=True)
             
         csv = df_display.to_csv(index=False).encode('utf-8')
-        st.download_button(label="📥 Download Summary as CSV", data=csv, file_name="pi_index_triage_results.csv", mime="text/csv")
+        st.download_button(label="Download Summary as CSV", data=csv, file_name="pi_index_triage_results.csv", mime="text/csv")
 
         # Explainability (XAI) Expanders
-        st.markdown("### 🧠 Evaluation Rationale (XAI)")
+        st.markdown("### Evaluation Rationale (XAI)")
         for i, row in df.iterrows():
-            with st.expander(f"📄 {row['Extracted Title']} (Score: {row['Pi-Index (0-10)']})"):
+            with st.expander(f"{row['Extracted Title']} (Score: {row['Pi-Index']})"):
                 st.markdown(f"**Recommendation:** {row['Recommendation']} | **Drift:** {row['Scope Drift %']}%")
                 for crit, reason in row['Rationale'].items():
                     st.markdown(f"**{crit}**: {reason}")
@@ -333,13 +347,15 @@ with tab2:
     st.subheader("Scope-Centered Epistemic Network")
     st.write("Visualizes how your uploaded papers branch out into specific departments and keywords around your topic.")
     
-    search_scope = st.text_input("Enter scope to map (defaults to last searched)", value=st.session_state.get('last_scope', ''))
-    if st.button("Generate Cartography") or search_scope:
+    # Text input syncs with Tab 1, or can be changed directly. Re-renders automatically on input.
+    search_scope = st.text_input("Enter scope to map:", value=research_scope)
+    
+    if search_scope:
         fig = generate_centered_network(search_scope)
         if fig: 
             st.plotly_chart(fig, use_container_width=True)
         else: 
-            st.warning("Awaiting sufficient data for this scope.")
+            st.info("Awaiting sufficient data for this scope.")
 
 with tab3:
     st.subheader("Recursive Weight Adaptations (EWM)")
