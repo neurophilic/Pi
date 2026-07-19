@@ -428,7 +428,29 @@ with tab3:
                     st.code(f"{seed_hash}", language="text")
 
         st.markdown("---")
+        st.markdown("### The Architecture of the Seed")
+        st.markdown(r"""
+        The PoS Seed is not a wallet balance or an account address; it is a cryptographic proof of integrity for that specific weight value. When generated, a SHA-256 hash binds four distinct pieces of information together:
+        
+        1.  **The Weight Value:** The specific numerical value of $\varpi_i$ (e.g., 1.000000).
+        2.  **Epoch Block Height:** The index of the blockchain epoch.
+        3.  **$\pi$ Accuracy:** The value of $\pi$ used for that specific epoch.
+        4.  **Evaluation Hash:** The unique ID of the academic paper that triggered the weight update.
+        
+        **Formula:**
+        $$ \text{PoS Seed} = \text{SHA-256}(\text{Weight}_i + \text{BlockHeight} + \pi_{\text{acc}} + \text{EvalHash}) $$
+        
+        This creates a unique "fingerprint." If anyone were to manually change the value of $\varpi_i$ in the database, the PoS Seed would no longer match the hash stored in the block, and the blockchain explorer would immediately flag it as Tampered.
+        """)
+        
         st.markdown("### PoS Blockchain Explorer")
+        st.markdown("""
+        **How to Verify via the Explorer:**
+        1.  **Locate the Eval Hash:** Copy the Evaluation Hash (Document) associated with a paper you assessed (found in the "Batch Assessment" table or the Ledger).
+        2.  **Use the Explorer:** Paste that hash into the PoS Blockchain Explorer input field below.
+        3.  **Click "Verify Record":** The system will query the blockchain database.
+        4.  **Result:** It will return a JSON object containing the exact Weights Matrix ($\varpi_1$ through $\varpi_8$) as they existed at the moment that specific block was mined, alongside the immutable Block Hash.
+        """)
         
         explore_col1, explore_col2 = st.columns([3, 1])
         with explore_col1:
