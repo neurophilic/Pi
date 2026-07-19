@@ -8,21 +8,19 @@ import numpy as np
 import networkx as nx
 import plotly.graph_objects as go
 import streamlit as st
-import fitz  # PyMuPDF
 from groq import Groq, RateLimitError
 
 # --- 1. CONFIGURATION & ENVIRONMENT ---
-st.set_page_config(page_title="The Pi Index (π-Index)", page_icon="🏛️", layout="wide")
+st.set_page_config(page_title="Pi-Index Triage (π-Index)", layout="wide")
 
 PRIMARY_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "llama-3.1-8b-instant"
-MAX_TEXT_TOKENS = 6000
 EPOCH_DAYS = 30
 SEED_NUMBER = 42
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
 os.makedirs(BASE_DIR, exist_ok=True)
-DB_PATH = os.path.join(BASE_DIR, 'recursive_pi_index.db')
+DB_PATH = os.path.join(BASE_DIR, 'triage_pi_index.db')
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 if not GROQ_API_KEY:
@@ -36,18 +34,12 @@ def init_system():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
-    # Table for individual paper assessments (Pi-Index aligned)
-    cursor.execute('''CREATE TABLE IF NOT EXISTS papers 
-                      (file_hash TEXT PRIMARY KEY, filename TEXT, 
+    # Updated Table for abstract-based assessments + Scope Alignment
+    cursor.execute('''CREATE TABLE IF NOT EXISTS papers_triage 
+                      (eval_hash TEXT PRIMARY KEY, title TEXT, 
                        c1 REAL, c2 REAL, c3 REAL, c4 REAL, 
-                       c5 REAL, c6 REAL, c7 REAL, c8 REAL,
+                       c5 REAL, c6 REAL, c7 REAL, c8 REAL, scope_alignment REAL,
                        keywords TEXT, departments TEXT, final_score REAL, timestamp DATETIME)''')
-                       
-    # Ensure departments column exists (for migrating older DBs)
-    try:
-        cursor.execute("ALTER TABLE papers ADD COLUMN departments TEXT DEFAULT '[]'")
-    except sqlite3.OperationalError:
-        pass # Column already exists
                        
     # Table for historical 30-day epoch EWM weights
     cursor.execute('''CREATE TABLE IF NOT EXISTS epoch_weights 
@@ -68,16 +60,11 @@ conn = init_system()
 
 # --- 3. RECURSIVE ENTROPY WEIGHT METHOD (EWM) ALGORITHM ---
 def calculate_ewm_weights(matrix):
-    """
-    Calculates objective criteria weights using Shannon Entropy.
-    Formula: W_j = d_j / SUM(d_j) where d_j = 1 - E_j
-    This ensures the Pi Index recursively adapts to scientific consensus.
-    """
+    """Calculates objective criteria weights using Shannon Entropy."""
     m, n = matrix.shape
     if m <= 1:
         return np.ones(n) / n 
     
-    # Min-Max Normalization to bounded [0, 1] space
     norm_matrix = np.zeros_like(matrix)
     for j in range(n):
         col = matrix[:, j]
@@ -87,21 +74,17 @@ def calculate_ewm_weights(matrix):
         else:
             norm_matrix[:, j] = 0.5 
 
-    # Calculate proportions p_ij
     col_sums = norm_matrix.sum(axis=0)
     col_sums[col_sums == 0] = 1e-9 
     p_matrix = norm_matrix / col_sums
     
-    # Calculate Information Entropy (E_j)
     p_matrix_eps = np.where(p_matrix == 0, 1e-12, p_matrix)
     entropy = - (1.0 / np.log(m)) * np.sum(p_matrix * np.log(p_matrix_eps), axis=0)
     
-    # Calculate Divergence (d_j) and Final Weights (W_j)
     d = 1.0 - entropy
     d_sum = d.sum()
     if d_sum == 0:
         return np.ones(n) / n
-    
     return d / d_sum
 
 def trigger_epoch_recalculation():
@@ -115,10 +98,10 @@ def trigger_epoch_recalculation():
         st.toast(f"⏳ {EPOCH_DAYS}-Day Recursion reached. Executing EWM recalibration...", icon="🔄")
         
         target_date = (datetime.now() - timedelta(days=EPOCH_DAYS)).isoformat()
-        cursor.execute("SELECT c1, c2, c3, c4, c5, c6, c7, c8 FROM papers WHERE timestamp >= ?", (target_date,))
+        cursor.execute("SELECT c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_triage WHERE timestamp >= ?", (target_date,))
         rows = cursor.fetchall()
         
-        if len(rows) > 5: # Statistical validity threshold
+        if len(rows) > 5:
             matrix = np.array(rows)
             new_weights = calculate_ewm_weights(matrix)
             
@@ -126,15 +109,20 @@ def trigger_epoch_recalculation():
                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
                            (*new_weights, datetime.now().isoformat()))
             conn.commit()
-            st.toast("✅ Pi Index successfully recursively adapted to current scientific variance.", icon="📈")
+            st.toast("✅ Pi Index successfully adapted to current scientific variance.", icon="📈")
 
 # --- 4. SEMANTIC LLM EXTRACTION & CLASSIFICATION ---
-def evaluate_paper(text, model):
-    """Leverages LLM to extract metrics, keywords, and affiliated science departments."""
-    prompt = f"""Read the following academic text excerpt. You are an expert peer reviewer contributing to the rigorous Pi-Index database.
-Evaluate the paper across the following 8 criteria, assigning a strict numerical score from 0.0 to 10.0 for each.
+def evaluate_paper(title, abstract, scope, model):
+    """Leverages LLM to extract metrics, keywords, departments, and scope drift."""
+    prompt = f"""You are an expert peer reviewer contributing to the rigorous Pi-Index database.
+The user is a researcher currently working on the following specific project/scope:
+"{scope}"
+
+Analyze the following academic paper Title and Abstract.
+Evaluate the paper across the 8 Pi-Index criteria, assigning a strict score from 0.0 to 10.0 for each.
+CRITICAL TASK: Evaluate 'Scope_Alignment' from 0.0 to 10.0. (10.0 = highly relevant to the researcher's scope, 0.0 = completely unrelated).
 Identify 5 specific research keywords.
-Crucially, map this paper to up to 3 standard Science Departments (e.g., "Quantum Physics", "Computational Biology", "Sociology", "Materials Science").
+Map this paper to up to 3 standard Science Departments (e.g., "Quantum Physics", "Computational Biology").
 
 Return ONLY a valid JSON object matching this exact structure:
 {{
@@ -142,42 +130,45 @@ Return ONLY a valid JSON object matching this exact structure:
     "C2_Methodological_Rigor": <float>,
     "C3_Interdisciplinary": <float>,
     "C4_Societal_Impact": <float>,
-    "C5_Open_Science": <float>,
+    "C5_Open_Science_Potential": <float>,
     "C6_Literature_Integration": <float>,
     "C7_Empirical_Density": <float>,
     "C8_Future_Actionability": <float>,
+    "Scope_Alignment": <float>,
     "keywords": ["kw1", "kw2", "kw3", "kw4", "kw5"],
     "departments": ["Dept1", "Dept2"]
 }}
-Text: {text[:MAX_TEXT_TOKENS]}"""
 
+Title: {title}
+Abstract: {abstract}
+"""
     response = client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model=model, temperature=0.1, seed=SEED_NUMBER, response_format={"type": "json_object"}
     )
     return json.loads(response.choices[0].message.content)
 
-def process_upload(file_bytes, filename):
-    file_hash = hashlib.sha256(file_bytes).hexdigest()
-    cursor = conn.cursor()
+def process_triage(title, abstract, scope):
+    # Hash includes the scope! Same paper + different scope = new evaluation
+    hash_input = f"{title}|{abstract}|{scope}".encode('utf-8')
+    eval_hash = hashlib.sha256(hash_input).hexdigest()
     
-    cursor.execute("SELECT final_score, c1, c2, c3, c4, c5, c6, c7, c8, departments FROM papers WHERE file_hash=?", (file_hash,))
+    cursor = conn.cursor()
+    cursor.execute("SELECT final_score, c1, c2, c3, c4, c5, c6, c7, c8, departments, scope_alignment FROM papers_triage WHERE eval_hash=?", (eval_hash,))
     cached = cursor.fetchone()
+    
     if cached:
         depts = json.loads(cached[9]) if cached[9] else []
-        return cached[0], list(cached[1:9]), depts, True, False
+        return cached[0], list(cached[1:9]), depts, cached[10], True, False
         
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
-    text = " ".join([page.get_text() for page in doc])
-    
     used_fallback = False
     try:
-        raw_scores = evaluate_paper(text, PRIMARY_MODEL)
+        raw_scores = evaluate_paper(title, abstract, scope, PRIMARY_MODEL)
     except RateLimitError:
         used_fallback = True
         st.toast(f"⚠️ Rate limit exceeded. Failing over to {FALLBACK_MODEL}.", icon="🔄")
         time.sleep(2)
-        raw_scores = evaluate_paper(text, FALLBACK_MODEL)
+        raw_scores = evaluate_paper(title, abstract, scope, FALLBACK_MODEL)
         
     cursor.execute("SELECT w1, w2, w3, w4, w5, w6, w7, w8 FROM epoch_weights ORDER BY epoch_id DESC LIMIT 1")
     weights = cursor.fetchone()
@@ -187,35 +178,35 @@ def process_upload(file_bytes, filename):
         raw_scores.get("C2_Methodological_Rigor", 5.0), 
         raw_scores.get("C3_Interdisciplinary", 5.0), 
         raw_scores.get("C4_Societal_Impact", 5.0),
-        raw_scores.get("C5_Open_Science", 5.0), 
+        raw_scores.get("C5_Open_Science_Potential", 5.0), 
         raw_scores.get("C6_Literature_Integration", 5.0),
         raw_scores.get("C7_Empirical_Density", 5.0), 
         raw_scores.get("C8_Future_Actionability", 5.0)
     ]
     
+    scope_alignment = raw_scores.get("Scope_Alignment", 5.0)
     departments = raw_scores.get("departments", ["General Science"])
     
     # Calculate final dynamic Pi-Index score (Score Vector · Weight Vector)
     final_score = float(np.dot(scores, weights))
     
-    cursor.execute('''INSERT INTO papers 
-                      (file_hash, filename, c1, c2, c3, c4, c5, c6, c7, c8, keywords, departments, final_score, timestamp) 
-                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                   (file_hash, filename, *scores, 
+    cursor.execute('''INSERT INTO papers_triage 
+                      (eval_hash, title, c1, c2, c3, c4, c5, c6, c7, c8, scope_alignment, keywords, departments, final_score, timestamp) 
+                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                   (eval_hash, title, *scores, scope_alignment,
                     json.dumps(raw_scores.get("keywords", [])), 
                     json.dumps(departments),
                     final_score, datetime.now().isoformat()))
     conn.commit()
     
     trigger_epoch_recalculation()
-    return final_score, scores, departments, False, used_fallback
+    return final_score, scores, departments, scope_alignment, False, used_fallback
 
 # --- 5. TOPOLOGICAL SCIENCE MAPPING (BIPARTITE) ---
 def generate_trend_network():
-    """Builds a semantic network mapping keywords to Scientific Departments."""
     cursor = conn.cursor()
     target_date = (datetime.now() - timedelta(days=EPOCH_DAYS)).isoformat()
-    cursor.execute("SELECT keywords, departments FROM papers WHERE timestamp >= ?", (target_date,))
+    cursor.execute("SELECT keywords, departments FROM papers_triage WHERE timestamp >= ?", (target_date,))
     
     G = nx.Graph()
     for row in cursor.fetchall():
@@ -223,7 +214,6 @@ def generate_trend_network():
             keywords = [k.title().strip() for k in json.loads(row[0])]
             depts = [d.title().strip() for d in (json.loads(row[1]) if row[1] else ["General Science"])]
             
-            # Connect Keywords to Departments
             for dept in depts:
                 G.add_node(dept, type='department')
                 for kw in keywords:
@@ -233,14 +223,13 @@ def generate_trend_network():
                     else:
                         G.add_edge(dept, kw, weight=1)
                         
-            # Connect Keywords to each other (Co-occurrence)
             for i in range(len(keywords)):
                 for j in range(i+1, len(keywords)):
                     if G.has_edge(keywords[i], keywords[j]):
                         G[keywords[i]][keywords[j]]['weight'] += 0.5
                     else:
                         G.add_edge(keywords[i], keywords[j], weight=0.5)
-        except Exception as e:
+        except Exception:
             continue
             
     if len(G.nodes) == 0:
@@ -256,7 +245,6 @@ def generate_trend_network():
         
     edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.3, color='#AAAAAA'), hoverinfo='none', mode='lines')
     
-    # Separate nodes by type for distinct rendering
     dept_nodes, kw_nodes = [], []
     for node, data in G.nodes(data=True):
         if data.get('type') == 'department':
@@ -264,18 +252,14 @@ def generate_trend_network():
         else:
             kw_nodes.append(node)
             
-    # Trace for Keywords
-    kw_x = [pos[n][0] for n in kw_nodes]
-    kw_y = [pos[n][1] for n in kw_nodes]
+    kw_x, kw_y = [pos[n][0] for n in kw_nodes], [pos[n][1] for n in kw_nodes]
     kw_text = [f"{n} (Freq: {int(G.degree(n, weight='weight'))})" for n in kw_nodes]
     kw_trace = go.Scatter(x=kw_x, y=kw_y, mode='markers+text', text=kw_nodes,
                           textposition="top center", hoverinfo='text', hovertext=kw_text,
                           marker=dict(showscale=False, color='#3498db', size=8, line_width=1, line_color='white'),
                           textfont=dict(size=9, color='#555'))
 
-    # Trace for Departments
-    dept_x = [pos[n][0] for n in dept_nodes]
-    dept_y = [pos[n][1] for n in dept_nodes]
+    dept_x, dept_y = [pos[n][0] for n in dept_nodes], [pos[n][1] for n in dept_nodes]
     dept_text = [f"🏛️ {n} (Centrality: {G.degree(n)})" for n in dept_nodes]
     dept_trace = go.Scatter(x=dept_x, y=dept_y, mode='markers+text', text=[f"<b>{n}</b>" for n in dept_nodes],
                             textposition="bottom center", hoverinfo='text', hovertext=dept_text,
@@ -293,55 +277,74 @@ def generate_trend_network():
     return fig
 
 # --- 6. USER INTERFACE ---
-st.title("🏛️ The Pi Index ($\pi$-Index)")
-st.markdown("**Recursive Epistemic Cartography & Autonomous Peer Review for the Modern Scientist**")
+st.title("🏛️ The Pi Index ($\pi$-Index) - Triage Engine")
+st.markdown("**Quantify Paper Quality & Prevent Scope Drift in Your Literature Review**")
 
-tab1, tab2, tab3 = st.tabs(["📄 Matrix Injection", "🌌 Departmental Cartography", "⚙️ The Recursive Loop"])
+tab1, tab2, tab3 = st.tabs(["📄 Triage a Paper", "🌌 Departmental Cartography", "⚙️ The Recursive Loop"])
 
 with tab1:
-    st.markdown("Inject your manuscript into the global $\pi$-Index matrix. Your paper's dimensional metrics will recursively update the evaluation baseline for the entire scientific community.")
-    uploaded_file = st.file_uploader("Upload Academic Manuscript (PDF)", type=["pdf"])
+    st.markdown("Paste the Title and Abstract of a paper, and define your current research scope. The engine will evaluate the paper's intrinsic quality ($\pi$-Index) and tell you how far off-topic it is (Scope Drift).")
     
-    if uploaded_file and st.button("Initialize $\pi$-Index Extraction", type="primary"):
-        with st.spinner("Decoding semantic density and executing recursive MCDA mapping..."):
-            score, raw_scores, depts, cached, used_fallback = process_upload(uploaded_file.read(), uploaded_file.name)
-            
-            if cached:
-                st.info("ℹ️ Manuscript hash recognized. Retrieving metrics from decentralized cache.")
-            else:
-                model_used = FALLBACK_MODEL if used_fallback else PRIMARY_MODEL
-                st.success(f"✅ Injection complete via `{model_used}` semantic parser.")
-
-            st.metric("Aggregate $\pi$-Index Score", f"{score:.3f} / 10.000")
-            if depts:
-                st.markdown(f"**Affiliated Departments:** `{'` • `'.join(depts)}`")
-            
-            st.markdown("---")
-            st.markdown("### Epistemic Vector Breakdown")
-            labels = ["C1: Originality", "C2: Methodological Rigor", "C3: Interdisciplinary Synthesis", 
-                      "C4: Societal Impact", "C5: Open Science", "C6: Literature Integration", 
-                      "C7: Empirical Density", "C8: Future Actionability"]
-            cols = st.columns(4)
-            for i, col in enumerate(cols * 2):
-                if i < 8:
-                    col.metric(labels[i], f"{raw_scores[i]:.2f}")
+    research_scope = st.text_input("🎯 Your Current Research Topic / Scope", placeholder="e.g., Use of transformer models for predicting protein folding...")
+    paper_title = st.text_input("📑 Paper Title")
+    paper_abstract = st.text_area("📝 Paper Abstract", height=200)
+    
+    if st.button("Evaluate Paper", type="primary"):
+        if not paper_title or not paper_abstract or not research_scope:
+            st.warning("⚠️ Please provide your research scope, paper title, and abstract.")
+        else:
+            with st.spinner("Decoding semantic density and evaluating scope drift..."):
+                score, raw_scores, depts, scope_alignment, cached, used_fallback = process_triage(paper_title, paper_abstract, research_scope)
+                
+                # Math for Scope Drift: 10.0 alignment = 0% drift, 0.0 alignment = 100% drift
+                drift_percentage = max(0.0, min(100.0, (10.0 - scope_alignment) * 10))
+                
+                # --- RECOMMENDATION LOGIC ---
+                st.markdown("### 📊 Triage Recommendation")
+                
+                if score >= 6.5 and drift_percentage <= 30.0:
+                    st.success(f"**🌟 Highly Recommended**\n\nGreat $\pi$-Index ({score:.2f}) and minimal scope drift ({drift_percentage:.0f}%). This paper is high-quality and directly relevant to your research.")
+                elif score >= 6.5 and drift_percentage > 30.0:
+                    st.warning(f"**⚠️ Warning: Scope Drift**\n\nWhile the intrinsic quality is good ($\pi$-Index: {score:.2f}), this paper drifts heavily ({drift_percentage:.0f}%) from your stated scope. Read with caution to avoid getting distracted.")
+                elif score < 6.5 and drift_percentage <= 30.0:
+                    st.info(f"**🔍 Borderline (In Scope, Low Quality)**\n\nIt matches your topic well (Drift: {drift_percentage:.0f}%), but the $\pi$-Index is relatively low ({score:.2f}). Might be worth skimming, but don't rely heavily on it.")
+                else:
+                    st.error(f"**🚫 Do Not Read (Discard)**\n\nLow quality ($\pi$-Index: {score:.2f}) AND highly irrelevant to your current scope (Drift: {drift_percentage:.0f}%). Skip this paper.")
+                
+                st.markdown("---")
+                
+                col1, col2 = st.columns(2)
+                col1.metric("Aggregate $\pi$-Index Score", f"{score:.3f} / 10.000")
+                col2.metric("Scope Drift", f"{drift_percentage:.1f}%", delta=f"{scope_alignment}/10 Alignment", delta_color="off")
+                
+                if depts:
+                    st.markdown(f"**Affiliated Departments:** `{'` • `'.join(depts)}`")
+                
+                st.markdown("### Epistemic Vector Breakdown")
+                labels = ["C1: Originality", "C2: Methodological Rigor", "C3: Interdisciplinary Synthesis", 
+                          "C4: Societal Impact", "C5: Open Science", "C6: Literature Integration", 
+                          "C7: Empirical Density", "C8: Future Actionability"]
+                cols = st.columns(4)
+                for i, col in enumerate(cols * 2):
+                    if i < 8:
+                        col.metric(labels[i], f"{raw_scores[i]:.2f}")
 
 with tab2:
     st.subheader("Global Epistemic Network")
-    st.write("This topological projection maps granular research topics (blue nodes) to their overarching Scientific Departments (red squares). Clusters revealing connections between traditionally isolated departments highlight disruptive, high-$\pi$ interdisciplinary frontiers.")
+    st.write("This topological projection maps granular research topics (blue nodes) to their overarching Scientific Departments (red squares).")
     fig = generate_trend_network()
     if fig:
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("Awaiting sufficient matrix injections to generate the departmental network projection.")
+        st.warning("Awaiting sufficient abstract inputs to generate the network projection.")
 
 with tab3:
     st.subheader("The $\pi$-Index Recursive Algorithm")
     st.markdown("""
-    Unlike static impact factors, the $\pi$-Index is an **autopoietically recursive system**. It employs Shannon Information Entropy to adaptively weigh scoring criteria based on current scientific trends.
+    The $\pi$-Index employs Shannon Information Entropy to adaptively weigh scoring criteria based on current scientific trends.
     
-    * **High Entropy (Uniformity):** When the global scientific community masters a criterion (e.g., *Open Science* becomes standard), its mathematical variance drops, and the $\pi$-Index automatically reduces its weighting ($W_j$).
-    * **Low Entropy (Disruption):** Criteria where manuscript scores are highly volatile represent the current frontier of scientific difficulty. The $\pi$-Index recursively isolates these vectors and assigns them heavier weights to reward true breakthroughs.
+    * **High Entropy (Uniformity):** When the scientific community masters a criterion, its variance drops, and the $\pi$-Index reduces its weighting.
+    * **Low Entropy (Disruption):** Criteria where manuscript scores are highly volatile represent the current frontier. The $\pi$-Index assigns them heavier weights to reward true breakthroughs.
     """)
     
     cursor = conn.cursor()
