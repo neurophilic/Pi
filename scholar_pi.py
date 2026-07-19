@@ -325,14 +325,14 @@ def generate_interactive_bubble_chart(scope, user_id):
     net.set_options(physics_options)
     
     for _, row in topic_counts.iterrows():
-        # Large bubbles have higher mass to exert more gravity
-        node_size = 25 + (row['count'] * 6)
-        node_mass = 1 + (row['count'] * 2) 
+        freq = row['count']
+        node_size = 20 + (freq * 10) 
+        node_mass = 1 + (freq * 2)   # Higher mass = more gravity/centrality
         
         net.add_node(
             n_id=row['topic'],
             label=row['topic'],
-            title=f"Topic: {row['topic']} | Freq: {row['count']}",
+            title=f"Topic: {row['topic']} | Frequency: {freq}",
             size=node_size,
             mass=node_mass,
             color=color_map[row['topic']]
@@ -363,6 +363,7 @@ def generate_interactive_bubble_chart(scope, user_id):
     table_html += "</table>"
     
     return html_string + table_html, topic_counts
+
 # --- 8. USER INTERFACE ---
 st.title("π-Index Assessment Engine")
 st.markdown("**Upload papers, define your scope of research, let π-index filter noise and have better results**")
@@ -448,13 +449,25 @@ with tab1:
 
     # Display History below the form
     st.markdown("---")
-    st.markdown("### Your Assessment History")
+    st.markdown("### Latest Assessment History")
+    
+    # Clear History Logic
+    if st.button("🗑️ Clear All History"):
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM papers_assessment WHERE user_id=?", (current_user,))
+        conn.commit()
+        st.rerun() # Refresh the app to update the view
+        
+    # Fetch and display history
     cursor = conn.cursor()
     cursor.execute("SELECT title, scope, final_score, timestamp, eval_hash FROM papers_assessment WHERE user_id=? ORDER BY timestamp DESC LIMIT 20", (current_user,))
     history_data = cursor.fetchall()
+    
     if history_data:
         df_hist = pd.DataFrame(history_data, columns=["Paper Title", "Scope", "π-Index Score", "Date", "Evaluation Hash"])
         st.dataframe(df_hist, use_container_width=True, hide_index=True)
+    else:
+        st.info("No assessment history found.")
 
 with tab2:
     st.subheader("Field & Subfield Epistemic Bubbles")
