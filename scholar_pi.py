@@ -3,15 +3,17 @@ import sqlite3
 import json
 import hashlib
 import time
+import tempfile
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import networkx as nx
-import plotly.graph_objects as go
 import plotly.express as px
 import streamlit as st
+import streamlit.components.v1 as components
 import fitz  # PyMuPDF
 from groq import Groq, RateLimitError
+from pyvis.network import Network
 
 # --- 1. CONFIGURATION & ENVIRONMENT ---
 st.set_page_config(page_title="π-Index Assessment Engine", layout="wide")
@@ -23,7 +25,7 @@ SEED_NUMBER = 42
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
 os.makedirs(BASE_DIR, exist_ok=True)
-DB_PATH = os.path.join(BASE_DIR, 'pi_index_assessment_v8_pos.db')
+DB_PATH = os.path.join(BASE_DIR, 'pi_index_assessment_v9_pos.db')
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 if not GROQ_API_KEY:
@@ -224,8 +226,8 @@ def process_single_pdf(file_bytes, filename, scope):
     
     return title, final_score, drift, get_recommendation_spectrum(final_score, drift), fields, subfields, scores_dict
 
-# --- 6. TOPOLOGICAL MAPPING (3D REALISTIC BUBBLE CHART) ---
-def generate_bubble_chart(scope):
+# --- 6. TOPOLOGICAL MAPPING (INTERACTIVE PYVIS NETWORK) ---
+def generate_interactive_bubble_chart(scope):
     cursor = conn.cursor()
     cursor.execute("SELECT fields, subfields FROM papers_assessment WHERE scope=?", (scope,))
     data = cursor.fetchall()
@@ -233,16 +235,12 @@ def generate_bubble_chart(scope):
     if not data: return None
     
     all_topics = []
-    
     for fields_json, subfields_json in data:
         try:
             fields = [f.title().strip() for f in json.loads(fields_json)]
             subfields = [s.title().strip() for s in json.loads(subfields_json)]
-            
-            for f in fields:
-                all_topics.append({'topic': f, 'category': 'Field'})
-            for s in subfields:
-                all_topics.append({'topic': s, 'category': 'Subfield'})
+            for f in fields: all_topics.append({'topic': f, 'category': 'Field'})
+            for s in subfields: all_topics.append({'topic': s, 'category': 'Subfield'})
         except: continue
             
     if not all_topics: return None
@@ -252,60 +250,31 @@ def generate_bubble_chart(scope):
     topic_counts = topic_counts.sort_values(by='count', ascending=False).reset_index(drop=True)
     
     max_count = topic_counts['count'].max()
-    min_size = 35
-    max_size = 110
+    min_size = 25
+    max_size = 85
     topic_counts['bubble_size'] = min_size + (topic_counts['count'] / max_count) * (max_size - min_size)
     
-    np.random.seed(SEED_NUMBER)
-    topic_counts['x'] = np.random.normal(0, 1.5, len(topic_counts))
-    topic_counts['y'] = np.random.normal(0, 1.5, len(topic_counts))
+    # Initialize physics-enabled Network
+    net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50')
+    net.barnes_hut(gravity=-3000, central_gravity=0.1, spring_length=150, spring_strength=0.05, damping=0.09, overlap=0)
     
-    for _ in range(60):
-        for i in range(len(topic_counts)):
-            for j in range(len(topic_counts)):
-                if i != j:
-                    dx = topic_counts.loc[i, 'x'] - topic_counts.loc[j, 'x']
-                    dy = topic_counts.loc[i, 'y'] - topic_counts.loc[j, 'y']
-                    dist = np.sqrt(dx**2 + dy**2)
-                    if dist < 0.6:
-                        topic_counts.loc[i, 'x'] += dx * 0.15
-                        topic_counts.loc[i, 'y'] += dy * 0.15
-    
-    fig = go.Figure()
     color_palette = px.colors.qualitative.Bold + px.colors.qualitative.Pastel + px.colors.qualitative.Vivid
     
     for i, row in topic_counts.iterrows():
-        topic = row['topic']
-        size = row['bubble_size']
-        count = row['count']
+        net.add_node(
+            n_id=row['topic'],
+            label=" ",  # Hidden labels
+            title=f"{row['topic']}<br>Category: {row['category']}<br>Focus Frequency: {row['count']}", # Shows on hover
+            size=row['bubble_size'],
+            color=color_palette[i % len(color_palette)],
+            shape='dot'
+        )
         
-        fig.add_trace(go.Scatter(
-            x=[row['x']], y=[row['y']],
-            mode='markers',
-            marker=dict(
-                size=size,
-                color=color_palette[i % len(color_palette)],
-                line=dict(width=1, color='rgba(255, 255, 255, 0.4)'),
-                sizemode='diameter',
-                gradient=dict(type='radial', color='rgba(255, 255, 255, 0.85)'),
-                opacity=0.95
-            ),
-            name=topic, 
-            hovertext=f"<b>{topic}</b><br>Category: {row['category']}<br>Focus Frequency: {count}",
-            hoverinfo="text"
-        ))
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp_file:
+        net.save_graph(tmp_file.name)
+        html_string = open(tmp_file.name, 'r', encoding='utf-8').read()
         
-    fig.update_layout(
-        showlegend=True,
-        legend_title_text='Fields & Subfields',
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        margin=dict(l=10, r=10, b=10, t=10),
-        hovermode='closest',
-        plot_bgcolor='rgba(0,0,0,0)'
-    )
-                                        
-    return fig
+    return html_string
 
 # --- 7. USER INTERFACE ---
 st.title("π-Index Assessment Engine")
@@ -394,12 +363,12 @@ with tab1:
 
 with tab2:
     st.subheader("Field & Subfield Epistemic Bubbles")
-    st.write("Visualizing your research scope")
+    st.write("Visualizing your research scope (Click and drag the bubbles to interact)")
     
     if research_scope:
-        fig = generate_bubble_chart(research_scope)
-        if fig: 
-            st.plotly_chart(fig, use_container_width=True)
+        interactive_html = generate_interactive_bubble_chart(research_scope)
+        if interactive_html: 
+            components.html(interactive_html, height=620)
         else: 
             st.info("Awaiting sufficient data for this scope.")
     else:
@@ -421,7 +390,7 @@ with tab3:
         
         st.markdown(f"**Last Model Orchestration:** `{model_used}` | **Epoch Block:** `{block_height}` | **Pi Acc:** `{current_pi_base}`")
         
-        st.markdown("""
+        st.markdown(r"""
         **Weight Evolution Dynamics:**
         $$ \varpi_{i}^{(t+1)} = \mathcal{N} \left( \lambda \varpi_{i}^{(t)} + (1-\lambda) \left[ 1 + \kappa \left( \frac{V \cdot S}{\Delta_{\mathcal{M}} \cdot \pi_{(t)}} \right) \left( \frac{C_i}{100} \right) \right] \right) $$
         
@@ -452,11 +421,11 @@ with tab3:
             if i < 8: 
                 name, symbol = labels[i]
                 col.markdown(f"**{name} ({symbol})**")
-                col.markdown(f"<h3 style='margin-top:0px; margin-bottom:5px;'>{weights[i]:.3f}</h3>", unsafe_allow_html=True)
+                col.markdown(f"<h3 style='margin-top:0px; margin-bottom:5px;'>{weights[i]:.6f}</h3>", unsafe_allow_html=True)
                 
                 with col.expander("PoS Seed"):
                     seed_hash = hashlib.sha256(f"{weights[i]}_pos_{block_height}_{current_pi_base}_{eval_hash}".encode()).hexdigest()
-                    st.code(f"{seed_hash[:24]}...", language="text")
+                    st.code(f"{seed_hash}", language="text")
 
         st.markdown("---")
         st.markdown("### PoS Blockchain Explorer")
