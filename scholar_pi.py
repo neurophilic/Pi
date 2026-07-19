@@ -273,7 +273,7 @@ def safe_color_to_rgba(color, alpha=0.6):
     # Safe Fallback color
     return f'rgba(100, 150, 200, {alpha})'
 
-
+# --- 6. TOPOLOGICAL MAPPING (INTERACTIVE PYVIS NETWORK) ---
 def generate_interactive_bubble_chart(scope, user_id):
     cursor = conn.cursor()
     cursor.execute("SELECT fields, subfields FROM papers_assessment WHERE scope=? AND user_id=?", (scope, user_id))
@@ -297,44 +297,42 @@ def generate_interactive_bubble_chart(scope, user_id):
     topic_counts = topic_counts.sort_values(by='count', ascending=False).reset_index(drop=True)
     
     max_count = topic_counts['count'].max()
-    max_idx = topic_counts['count'].idxmax() # To find the largest bubble
-    min_size, max_size = 40, 120
+    min_size = 25
+    max_size = 85
     topic_counts['bubble_size'] = min_size + (topic_counts['count'] / max_count) * (max_size - min_size)
     
-    net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50')
+    # Initialize physics-enabled Network
+    net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
     
-    # Physics configured for springy effect with central gravity
-    net.options.physics.use_force_atlas_2based(
-        gravity=-80,
-        central_gravity=0.015,
-        spring_length=150,
-        spring_strength=0.08,
-        damping=0.4,
-        overlap=0.5
-    )
+    # Corrected Physics Configuration
+    physics_options = """
+    {
+      "physics": {
+        "forceAtlas2Based": {
+          "gravitationalConstant": -80,
+          "centralGravity": 0.01,
+          "springLength": 100,
+          "springConstant": 0.08,
+          "damping": 0.4,
+          "avoidOverlap": 0.5
+        },
+        "minVelocity": 0.75,
+        "solver": "forceAtlas2Based"
+      }
+    }
+    """
+    net.set_options(physics_options)
     
     color_palette = px.colors.qualitative.Bold + px.colors.qualitative.Pastel + px.colors.qualitative.Vivid
-    rgba_palette = [safe_color_to_rgba(c, 0.65) for c in color_palette] 
     
     for i, row in topic_counts.iterrows():
-        is_biggest = (i == max_idx)
-        node_mass = (row['count'] / max_count) * 10 
-        
-        # Used \n instead of <br> to fix hover text rendering errors in vis.js
-        hover_text = f"{row['topic']}\nCategory: {row['category']}\nFrequency: {row['count']}"
-        
         net.add_node(
             n_id=row['topic'],
-            label=row['topic'],  
-            title=hover_text,
+            label=" ",
+            title=f"{row['topic']}<br>Category: {row['category']}<br>Focus Frequency: {row['count']}",
             size=row['bubble_size'],
-            color=rgba_palette[i % len(rgba_palette)],
-            shape='dot',
-            mass=node_mass,
-            # Pin the largest node to the exact center (x=0, y=0)
-            x=0 if is_biggest else None,
-            y=0 if is_biggest else None,
-            fixed=True if is_biggest else False
+            color=color_palette[i % len(color_palette)],
+            shape='dot'
         )
         
     with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp_file:
@@ -342,6 +340,7 @@ def generate_interactive_bubble_chart(scope, user_id):
         html_string = open(tmp_file.name, 'r', encoding='utf-8').read()
         
     return html_string, topic_counts
+    
 
 
 # --- 8. USER INTERFACE ---
