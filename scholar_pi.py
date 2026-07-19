@@ -290,10 +290,9 @@ def generate_interactive_bubble_chart(scope, user_id):
     
     net = Network(height='600px', width='100%', bgcolor='#ffffff', font_color='#2c3e50', notebook=False)
     
-    # --- TIGHTENED PHYSICS FOR OVERLAP ---
+    # --- ADJUSTED PHYSICS FOR MORE SPACE ---
     physics_options = """
     {
-      {
       "physics": {
         "forceAtlas2Based": {
           "gravitationalConstant": -60,
@@ -303,7 +302,6 @@ def generate_interactive_bubble_chart(scope, user_id):
         },
         "solver": "forceAtlas2Based"
       }
-    
     }
     """
     net.set_options(physics_options)
