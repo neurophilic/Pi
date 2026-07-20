@@ -601,7 +601,7 @@ with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
         st.markdown("**C8: Future Actionability**\nDetermines continuation potential using Lyapunov exponents.")
         st.markdown(r"$$F_a = \varpi_8 \cdot \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\mathbf{x}) \times 100 $$")
 
-# Initialize Session State tracking for Tab 2 cartography and global updates
+# Ensure persistent session keys exist for immediate cache invalidation on any reload or request
 if 'cartography_refresh_key' not in st.session_state:
     st.session_state.cartography_refresh_key = time.time()
 
@@ -659,7 +659,7 @@ with tab1:
                 
             status_text.text("Batch processing complete!")
             
-            # Explicitly force cache invalidation and trigger full app state refresh
+            # Instantly update cache buster and rerun so cartography completely regenerates
             st.session_state['last_trained_blocks'] = -1
             st.session_state.cartography_refresh_key = time.time()
             st.rerun()
@@ -684,23 +684,26 @@ with tab2:
     st.subheader("Epistemic Bubbles (Author & Portfolio Cartography)")
     st.write("Filter the topological network map below by the extracted primary author names of your evaluated papers.")
     
+    # Force dynamic timestamp generation on every layout render so data is never iframe-cached
+    dynamic_render_token = time.time()
+    
     cursor = conn.cursor()
     cursor.execute("SELECT DISTINCT author_name FROM papers_assessment WHERE user_id=?", (current_user,))
     user_authors = [row[0] for row in cursor.fetchall() if row[0] and row[0].strip()]
     
     selected_author = None
     if user_authors:
-        filter_choice = st.selectbox("Filter Cartography by Primary Author:", ["All Authors"] + user_authors, key=f"author_filter_{st.session_state.cartography_refresh_key}")
+        filter_choice = st.selectbox("Filter Cartography by Primary Author:", ["All Authors"] + user_authors, key=f"author_filter_key_{st.session_state.cartography_refresh_key}")
         if filter_choice != "All Authors":
             selected_author = filter_choice
 
-    # Unconditionally query the database and rebuild cartography on every single load/refresh
     interactive_html, table_html = generate_interactive_bubble_chart(current_user, target_author=selected_author)
     
     if interactive_html:
         col1, col2 = st.columns([3, 1])
         with col1:
-            components.html(interactive_html, height=620, scrolling=True)
+            # Append dynamic token to component key to guarantee the iframe re-renders with fresh graph data
+            components.html(interactive_html, height=620, scrolling=True, key=f"pyvis_iframe_{dynamic_render_token}")
         with col2:
             st.markdown("### Legend")
             st.markdown(table_html, unsafe_allow_html=True)
