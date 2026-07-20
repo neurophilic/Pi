@@ -601,7 +601,6 @@ with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
         st.markdown("**C8: Future Actionability**\nDetermines continuation potential using Lyapunov exponents.")
         st.markdown(r"$$F_a = \varpi_8 \cdot \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\mathbf{x}) \times 100 $$")
 
-# Ensure persistent session keys exist for immediate cache invalidation on any reload or request
 if 'cartography_refresh_key' not in st.session_state:
     st.session_state.cartography_refresh_key = time.time()
 
@@ -659,7 +658,6 @@ with tab1:
                 
             status_text.text("Batch processing complete!")
             
-            # Instantly update cache buster and rerun so cartography completely regenerates
             st.session_state['last_trained_blocks'] = -1
             st.session_state.cartography_refresh_key = time.time()
             st.rerun()
@@ -684,9 +682,6 @@ with tab2:
     st.subheader("Epistemic Bubbles (Author & Portfolio Cartography)")
     st.write("Filter the topological network map below by the extracted primary author names of your evaluated papers.")
     
-    # Force dynamic timestamp generation on every layout render so data is never iframe-cached
-    dynamic_render_token = time.time()
-    
     cursor = conn.cursor()
     cursor.execute("SELECT DISTINCT author_name FROM papers_assessment WHERE user_id=?", (current_user,))
     user_authors = [row[0] for row in cursor.fetchall() if row[0] and row[0].strip()]
@@ -702,8 +697,9 @@ with tab2:
     if interactive_html:
         col1, col2 = st.columns([3, 1])
         with col1:
-            # Append dynamic token to component key to guarantee the iframe re-renders with fresh graph data
-            components.html(interactive_html, height=620, scrolling=True, key=f"pyvis_iframe_{dynamic_render_token}")
+            # Inject a dynamic HTML comment buster to force Streamlit's iframe component to update on every run
+            dynamic_html_payload = f"<!-- CacheBuster:{time.time()} -->\n" + interactive_html
+            components.html(dynamic_html_payload, height=620, scrolling=True)
         with col2:
             st.markdown("### Legend")
             st.markdown(table_html, unsafe_allow_html=True)
