@@ -16,6 +16,12 @@ import fitz  # PyMuPDF
 from groq import Groq
 from pyvis.network import Network
 
+# --- MACHINE LEARNING IMPORTS ---
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+
 # --- 1. CONFIGURATION & ENVIRONMENT ---
 st.set_page_config(page_title="π-Index Assessment Engine", layout="wide")
 
@@ -25,8 +31,6 @@ MAX_TEXT_TOKENS = 12000 # ~2500 tokens to safely stay below the TPM limit
 SEED_NUMBER = 42
 
 # BLOCKCHAIN CONFIGURATION
-# Defines how many evaluations must occur before mining a new epoch block. 
-# Set to 1 for live testing updates. Change back to 10 for production.
 EPOCH_BLOCK_SIZE = 5
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
@@ -478,7 +482,38 @@ def generate_interactive_bubble_chart(scope, user_id):
     
     return html_string, table_html
 
-# --- 5. USER INTERFACE ---
+# --- 5. NEURAL NETWORK CLASSES ---
+class PiBlockchainDataset(Dataset):
+    def __init__(self, data_matrix, lookback):
+        self.data = data_matrix
+        self.lookback = lookback
+
+    def __len__(self):
+        return len(self.data) - self.lookback
+
+    def __getitem__(self, idx):
+        x = self.data[idx : idx + self.lookback]
+        y = self.data[idx + self.lookback]
+        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
+
+class PiBrainLSTM(nn.Module):
+    def __init__(self, input_size=8, hidden_layer_size=32, output_size=8):
+        super(PiBrainLSTM, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_layer_size, batch_first=True)
+        self.linear = nn.Sequential(
+            nn.Linear(hidden_layer_size, 16),
+            nn.ReLU(),
+            nn.Linear(16, output_size)
+        )
+
+    def forward(self, x):
+        lstm_out, _ = self.lstm(x)
+        last_time_step = lstm_out[:, -1, :]
+        predictions = self.linear(last_time_step)
+        normalized_predictions = torch.softmax(predictions, dim=-1) * 8.0
+        return normalized_predictions
+
+# --- 6. USER INTERFACE ---
 st.sidebar.title("System Access")
 
 if 'orcid_id' not in st.session_state:
@@ -549,7 +584,7 @@ with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
         st.markdown("**C8: Future Actionability**\nDetermines continuation potential using Lyapunov exponents.")
         st.markdown(r"$$F_a = \varpi_8 \cdot \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\mathbf{x}) \times 100 $$")
 
-tab1, tab2, tab3 = st.tabs(["Batch Assessment", "Scope Cartography", "Active Epoch Constants"])
+tab1, tab2, tab3, tab4 = st.tabs(["Batch Assessment", "Scope Cartography", "Active Epoch Constants", "π-Brain Neural Network"])
 
 with tab1:
     research_scope = st.text_input("Define your specific Research Topic / Scope (Optional)", placeholder="e.g., Application of deep learning in vascular imaging...")
@@ -705,6 +740,82 @@ with tab3:
             cursor.execute("SELECT block_height, timestamp, model_used, block_hash FROM blockchain_por_weights ORDER BY block_height DESC LIMIT 10")
             df_blocks = pd.DataFrame(cursor.fetchall(), columns=["Height", "Timestamp", "Model", "Block Hash"])
             st.dataframe(df_blocks, use_container_width=True, hide_index=True)
+
+with tab4:
+    st.subheader("π-Brain: Meta-Learning on the PoR Blockchain")
+    st.info("""
+    **How it works:** Instead of relying on language models to process the next weight shift, this LSTM Neural Network treats your Proof of Review (PoR) blockchain as a time-series dataset. 
+    It trains on the historical evolution of previous epochs and predicts the exact mathematical trajectory of the next unmined epoch.
+    """)
+    
+    cursor = conn.cursor()
+    cursor.execute("SELECT w1, w2, w3, w4, w5, w6, w7, w8 FROM blockchain_por_weights ORDER BY block_height ASC")
+    historical_rows = cursor.fetchall()
+    
+    lookback_window = 5
+    
+    if len(historical_rows) < lookback_window + 2:
+        st.warning(f"⚠️ Not enough blockchain data to train the meta-model. Current blocks: {len(historical_rows)}. You need at least {lookback_window + 2} blocks to form a training sequence. Please assess more papers.")
+    else:
+        st.success(f"✅ Ready for training. {len(historical_rows)} blocks successfully extracted from the ledger.")
+        
+        if st.button("Initialize & Train π-Brain", type="primary"):
+            weight_data = np.array(historical_rows, dtype=np.float32)
+            
+            dataset = PiBlockchainDataset(weight_data, lookback_window)
+            dataloader = DataLoader(dataset, batch_size=4, shuffle=False)
+            
+            model = PiBrainLSTM()
+            loss_function = nn.MSELoss()
+            optimizer = optim.Adam(model.parameters(), lr=0.001)
+            
+            st.markdown("### Training Log")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            epochs = 200
+            model.train()
+            
+            for epoch in range(epochs):
+                total_loss = 0
+                for seq, target in dataloader:
+                    optimizer.zero_grad()
+                    y_pred = model(seq)
+                    loss = loss_function(y_pred, target)
+                    loss.backward()
+                    optimizer.step()
+                    total_loss += loss.item()
+                    
+                if epoch % 10 == 0 or epoch == epochs - 1:
+                    avg_loss = total_loss / len(dataloader)
+                    status_text.text(f"Training Epoch {epoch}/{epochs} | MSE Loss: {avg_loss:.6f}")
+                    progress_bar.progress((epoch + 1) / epochs)
+            
+            status_text.success("Training Complete!")
+            progress_bar.progress(1.0)
+            
+            # Run Inference for Next Epoch
+            model.eval()
+            recent_blocks = weight_data[-lookback_window:]
+            seq_tensor = torch.tensor(recent_blocks, dtype=torch.float32).unsqueeze(0)
+            
+            with torch.no_grad():
+                next_weights = model(seq_tensor).squeeze().numpy()
+                
+            st.markdown("---")
+            st.markdown("### Next Epoch Prediction vs. Current Epoch")
+            
+            current_weights = weight_data[-1]
+            labels = ["C1: Originality", "C2: Method Rigor", "C3: Interdisciplinary", "C4: Societal Impact", "C5: Open Science", "C6: Lit Integration", "C7: Empirical Density", "C8: Actionability"]
+            
+            df_compare = pd.DataFrame({
+                "Current Active Weights": current_weights,
+                "Predicted Next Epoch": next_weights
+            }, index=labels)
+            
+            st.bar_chart(df_compare, height=400)
+            
+            st.markdown(f"**Mathematical Constraint Check:** Predicted Sum = `{sum(next_weights):.6f}` / `8.0`")
 
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
