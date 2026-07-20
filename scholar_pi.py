@@ -31,7 +31,6 @@ EPOCH_BLOCK_SIZE = 5
 
 BASE_DIR = os.path.abspath('./Scientometric_Pi_Index')
 os.makedirs(BASE_DIR, exist_ok=True)
-# Unified database name to prevent blockchain resets
 DB_PATH = os.path.join(BASE_DIR, 'pi_index_main.db')
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
@@ -383,7 +382,6 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     rec = get_recommendation_spectrum(final_score, drift) if scope.strip() else "N/A"
     
     timestamp = datetime.now().isoformat()
-    # Notice we save scope_alignment here, but we will always overwrite it dynamically when reading from cache
     cursor.execute('''INSERT INTO papers_assessment (eval_hash, user_id, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, logic_score, scope_alignment, subfields, fields, final_score, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                    (file_hash, user_id, title, filename, scope, *scores, logic_integrity, scope_alignment, json.dumps(subfields), json.dumps(fields), final_score, timestamp))
     conn.commit()
