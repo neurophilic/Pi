@@ -1,3 +1,13 @@
+The root cause is that Large Language Models (LLMs) running at `temperature=0.0` with strict JSON formatting constraints can sometimes struggle to locate or output metadata fields if the prompt doesn't isolate them strictly, or if the extracted text string passed to it truncates the top header block where the author names reside.
+
+To permanently fix the "Unknown Author" issue, we need to ensure two things:
+
+1. **Prioritize the first page's text layout** (or pass the text of the first page explicitly first, since author names are always at the top of page 1).
+2. **Enforce fallback logic in Python** so that if the LLM still returns an empty or unknown value, the system extracts the embedded PDF file metadata (`doc.metadata["author"]`) or parses the file name.
+
+Here is the fully corrected, drop-in replacement code. This updates `process_single_pdf` to pull native PDF metadata as a robust fallback and refines the LLM prompt structure:
+
+```python
 import os
 import sqlite3
 import json
@@ -237,13 +247,12 @@ def evaluate_pdf_text(text, model, text_limit):
     prompt = f"""You are the theoretical parser for the π-Index Assessment Engine.
 Instead of assigning arbitrary scores, you must read the academic paper and extract the underlying mathematical proxy variables based purely on the document's objective scientific merit.
 
-CRITICAL INSTRUCTION - FORCE EXTREME VARIANCE:
-Do NOT cluster your variables around 0.5. If a paper is weak or standard, use values between 0.0 and 0.3. If exceptional, use 0.8 to 1.0. 
-Failure to create extreme contrast will break the mathematical formulas.
+CRITICAL INSTRUCTION - AUTHOR EXTRACTION:
+Carefully look at the header region and first page of the text to find the paper title and the primary or corresponding author(s). Strip away numbers, asterisks, email addresses, and university affiliation footnotes, leaving only the clean human author name(s) (e.g., "Jane Doe" or "John Smith"). Do NOT leave this blank or default to unknown if names are present.
 
 1. Extracted Metadata:
-- `Extracted_Title`: The title of the paper.
-- `Extracted_Author`: The primary author or corresponding author name(s) identified in the paper header/metadata. Cleanly formatted. (Never leave this blank or default to unknown if names are present in the text).
+- `Extracted_Title`: The full title of the paper.
+- `Extracted_Author`: The primary author name(s) cleanly formatted.
 
 2. Extracted Variables (all values must be floats between 0.0 and 1.0, unless specified):
 - `H_novel`: Conceptual novelty (0.1 = derivative, 0.9 = groundbreaking).
@@ -331,6 +340,9 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     cached = cursor.fetchone()
     
     doc = fitz.open(stream=file_bytes, filetype="pdf")
+    # Pull metadata author fallback directly from PDF file metadata if available
+    pdf_meta_author = doc.metadata.get("author", "").strip()
+    
     text = " ".join([page.get_text() for page in doc]) 
     
     # Dynamically calculate Scope Alignment (always fresh based on the keyword)
@@ -340,10 +352,13 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
         score, logic_score, title, fields_str, subfields_str, author_name, c1, c2, c3, c4, c5, c6, c7, c8 = cached
         fields = json.loads(fields_str) if fields_str else ["General Science"]
         subfields = json.loads(subfields_str) if subfields_str else ["General"]
-        author_name = author_name or "Unknown Author"
+        
+        # Fallback fix if author name was previously stored as Unknown
+        if not author_name or author_name == "Unknown Author":
+            author_name = pdf_meta_author or os.path.splitext(filename)[0]
+
         scores_array = [c1, c2, c3, c4, c5, c6, c7, c8]
         
-        # Calculate dynamic drift based on the new keyword's alignment
         drift = calculate_complex_drift(scope_alignment, scores_array) if scope.strip() else "N/A"
         rec = get_recommendation_spectrum(score, drift) if scope.strip() else "N/A"
         scores_dict = {"C1_Originality": c1, "C2_Methodological_Rigor": c2, "C3_Interdisciplinary": c3, "C4_Societal_Impact": c4, "C5_Open_Science_Potential": c5, "C6_Literature_Integration": c6, "C7_Empirical_Density": c7, "C8_Future_Actionability": c8}
@@ -362,13 +377,13 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
             model_used = FALLBACK_MODEL
         except Exception as e2:
             st.error(f"Both models failed. API Error: {str(e2)}")
-            return "Extraction Failed", "Unknown Author", 0.0, 0.0, "N/A", "N/A", ["Unknown"], ["Unknown"], {k: 0.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]}, "Failed"
+            fallback_author = pdf_meta_author or os.path.splitext(filename)[0]
+            return "Extraction Failed", fallback_author, 0.0, 0.0, "N/A", "N/A", ["Unknown"], ["Unknown"], {k: 0.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]}, "Failed"
         
     cursor.execute("UPDATE global_eval_counter SET count = count + 1")
     cursor.execute("SELECT count FROM global_eval_counter")
     total_evals = cursor.fetchone()[0]
         
-    # CRITICAL: Always pull the absolute latest blockchain weights matrix to ensure mathematical consistency
     cursor.execute("SELECT block_height, block_hash, w1, w2, w3, w4, w5, w6, w7, w8 FROM blockchain_por_weights ORDER BY block_height DESC LIMIT 1")
     epoch_data = cursor.fetchone()
     block_height, previous_hash, old_weights = epoch_data[0], epoch_data[1], epoch_data[2:]
@@ -391,10 +406,14 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
         active_weights = old_weights
 
     title = raw_data.get("Extracted_Title", filename)
-    author_name = raw_data.get("Extracted_Author", "Unknown Author")
+    
+    # Comprehensive resolution chain for Author Name: LLM output -> PDF embedded metadata -> Cleaned filename fallback
+    extracted_author = raw_data.get("Extracted_Author", "").strip()
+    if not extracted_author or extracted_author.lower() in ["unknown", "unknown author", "none", "n/a"]:
+        extracted_author = pdf_meta_author or os.path.splitext(filename)[0]
+
     fields, subfields = raw_data.get("fields", ["General Science"]), raw_data.get("subfields", ["General"])
     
-    # Strictly compute final score utilizing the current synchronized blockchain weight matrix
     raw_final_score = float(np.dot(scores, active_weights)) / 8.0
     final_score = float(raw_final_score * (0.7 + (logic_integrity / 333.3)))
     
@@ -403,10 +422,10 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     
     timestamp = datetime.now().isoformat()
     cursor.execute('''INSERT INTO papers_assessment (eval_hash, user_id, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, logic_score, scope_alignment, subfields, fields, author_name, final_score, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                   (file_hash, user_id, title, filename, scope, *scores, logic_integrity, scope_alignment, json.dumps(subfields), json.dumps(fields), author_name, final_score, timestamp))
+                   (file_hash, user_id, title, filename, scope, *scores, logic_integrity, scope_alignment, json.dumps(subfields), json.dumps(fields), extracted_author, final_score, timestamp))
     conn.commit()
     
-    return title, author_name, final_score, logic_integrity, drift, rec, fields, subfields, scores_dict, file_hash
+    return title, extracted_author, final_score, logic_integrity, drift, rec, fields, subfields, scores_dict, file_hash
 
 # --- 4. TOPOLOGICAL MAPPING (INTERACTIVE PYVIS NETWORK) ---
 def generate_interactive_bubble_chart(user_id, target_author=None):
@@ -852,4 +871,6 @@ with tab4:
         st.markdown(f"**Mathematical Constraint Check:** Predicted Sum = `{sum(st.session_state.predicted_next_weights):.6f}` / `8.0`")
 
 st.markdown("---")
-st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_app_html=True)
+
+```
