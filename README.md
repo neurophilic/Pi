@@ -24,7 +24,8 @@ This application streamlines the peer review and self-assessment process. It ext
 
 ## Installation
 
-1. **Clone the repository**:
+https://scholarpi.streamlit.app/
+- **Clone the repository**:
    ```bash
    git clone <repository-url>
    cd Scientometric_Pi_Index
