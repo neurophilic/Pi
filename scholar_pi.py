@@ -84,10 +84,15 @@ def init_system():
                        c1 REAL, c2 REAL, c3 REAL, c4 REAL, 
                        c5 REAL, c6 REAL, c7 REAL, c8 REAL, 
                        scope_alignment REAL, logic_score REAL,
-                       subfields TEXT, fields TEXT, final_score REAL, timestamp DATETIME)''')
+                       subfields TEXT, fields TEXT, author_name TEXT, final_score REAL, timestamp DATETIME)''')
                        
     try:
         cursor.execute("ALTER TABLE papers_assessment ADD COLUMN logic_score REAL DEFAULT 0.0")
+    except sqlite3.OperationalError:
+        pass 
+
+    try:
+        cursor.execute("ALTER TABLE papers_assessment ADD COLUMN author_name TEXT DEFAULT 'Unknown Author'")
     except sqlite3.OperationalError:
         pass 
         
@@ -236,7 +241,11 @@ CRITICAL INSTRUCTION - FORCE EXTREME VARIANCE:
 Do NOT cluster your variables around 0.5. If a paper is weak or standard, use values between 0.0 and 0.3. If exceptional, use 0.8 to 1.0. 
 Failure to create extreme contrast will break the mathematical formulas.
 
-1. Extracted Variables (all values must be floats between 0.0 and 1.0, unless specified):
+1. Extracted Metadata:
+- `Extracted_Title`: The title of the paper.
+- `Extracted_Author`: The primary author or corresponding author name(s) identified in the paper header/metadata.
+
+2. Extracted Variables (all values must be floats between 0.0 and 1.0, unless specified):
 - `H_novel`: Conceptual novelty (0.1 = derivative, 0.9 = groundbreaking).
 - `K_epistemic`: Paradigm shift potential.
 - `zeta`: Reliance on existing works (0.9 = heavily reliant, 0.1 = independent/new).
@@ -263,7 +272,7 @@ Failure to create extreme contrast will break the mathematical formulas.
 - `eta_steps`: Number of concrete actionable future steps identified (Integer 1 to 5).
 - `Lambda_Lyapunov`: Trajectory divergence (0.1 = highly predictable continuation, 0.9 = chaotic/disruptive).
 
-2. Adversarial Logic Mapping:
+3. Adversarial Logic Mapping:
 Identify logical structural flaws and gaps in reasoning:
 - `Evidence_Strength`: (0.1 = Anecdotal/Weak, 0.9 = Robust/Repetitive).
 - `Conclusion_Reach`: (0.1 = Conservative/Supported, 0.9 = Wild/Unsupported).
@@ -273,6 +282,7 @@ Identify logical structural flaws and gaps in reasoning:
 Return ONLY a valid JSON object matching exactly this structure:
 {{
     "Extracted_Title": "Title", 
+    "Extracted_Author": "Author Name",
     "variables": {{
         "H_novel": 0.8, "K_epistemic": 0.7, "zeta": 0.5, "I_existing": 0.5, "Sigma_error": 0.1, "mu_signal": 0.9, "rho_k": 0.8,
         "p_disciplines": [0.6, 0.4], "bridge_capacity": 0.8, "Utility_vector": 0.7, "decay_rate": 0.2, "q_fractional": 1.2,
@@ -317,7 +327,7 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     cursor = conn.cursor()
     
     # Check cache based purely on the document, NOT the scope
-    cursor.execute("SELECT final_score, logic_score, title, fields, subfields, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment WHERE eval_hash=? AND user_id=?", (file_hash, user_id))
+    cursor.execute("SELECT final_score, logic_score, title, fields, subfields, author_name, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment WHERE eval_hash=? AND user_id=?", (file_hash, user_id))
     cached = cursor.fetchone()
     
     doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -327,9 +337,10 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     scope_alignment = evaluate_scope_alignment(text, scope, FALLBACK_MODEL, MAX_TEXT_TOKENS) if scope.strip() else 0.0
 
     if cached:
-        score, logic_score, title, fields_str, subfields_str, c1, c2, c3, c4, c5, c6, c7, c8 = cached
+        score, logic_score, title, fields_str, subfields_str, author_name, c1, c2, c3, c4, c5, c6, c7, c8 = cached
         fields = json.loads(fields_str) if fields_str else ["General Science"]
         subfields = json.loads(subfields_str) if subfields_str else ["General"]
+        author_name = author_name or "Unknown Author"
         scores_array = [c1, c2, c3, c4, c5, c6, c7, c8]
         
         # Calculate dynamic drift based on the new keyword's alignment
@@ -337,9 +348,9 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
         rec = get_recommendation_spectrum(score, drift) if scope.strip() else "N/A"
         scores_dict = {"C1_Originality": c1, "C2_Methodological_Rigor": c2, "C3_Interdisciplinary": c3, "C4_Societal_Impact": c4, "C5_Open_Science_Potential": c5, "C6_Literature_Integration": c6, "C7_Empirical_Density": c7, "C8_Future_Actionability": c8}
         
-        return title, score, logic_score, drift, rec, fields, subfields, scores_dict, file_hash
+        return title, author_name, score, logic_integrity, drift, rec, fields, subfields, scores_dict, file_hash
 
-    # IF NOT CACHED: Run the heavy Pi-Index calculation (Static document metrics)
+    # IF NOT CACHED: Run the heavy Pi-Index calculation and pull the latest active blockchain weights
     try:
         raw_data = evaluate_pdf_text(text, PRIMARY_MODEL, MAX_TEXT_TOKENS)
         model_used = PRIMARY_MODEL
@@ -351,12 +362,13 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
             model_used = FALLBACK_MODEL
         except Exception as e2:
             st.error(f"Both models failed. API Error: {str(e2)}")
-            return "Extraction Failed", 0.0, 0.0, "N/A", "N/A", ["Unknown"], ["Unknown"], {k: 0.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]}, "Failed"
+            return "Extraction Failed", "Unknown Author", 0.0, 0.0, "N/A", "N/A", ["Unknown"], ["Unknown"], {k: 0.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]}, "Failed"
         
     cursor.execute("UPDATE global_eval_counter SET count = count + 1")
     cursor.execute("SELECT count FROM global_eval_counter")
     total_evals = cursor.fetchone()[0]
         
+    # CRITICAL: Always pull the absolute latest blockchain weights matrix to ensure mathematical consistency
     cursor.execute("SELECT block_height, block_hash, w1, w2, w3, w4, w5, w6, w7, w8 FROM blockchain_por_weights ORDER BY block_height DESC LIMIT 1")
     epoch_data = cursor.fetchone()
     block_height, previous_hash, old_weights = epoch_data[0], epoch_data[1], epoch_data[2:]
@@ -374,31 +386,34 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
         val_node, block_hash = validate_block_por(block_height + 1, new_weights, timestamp, previous_hash, file_hash, model_used)
         cursor.execute('''INSERT INTO blockchain_por_weights (w1, w2, w3, w4, w5, w6, w7, w8, timestamp, previous_hash, validator_node, block_hash, eval_hash, model_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
                        (*new_weights, timestamp, previous_hash, val_node, block_hash, file_hash, model_used))
+        active_weights = new_weights
     else:
-        new_weights = old_weights
+        active_weights = old_weights
 
     title = raw_data.get("Extracted_Title", filename)
+    author_name = raw_data.get("Extracted_Author", "Unknown Author")
     fields, subfields = raw_data.get("fields", ["General Science"]), raw_data.get("subfields", ["General"])
     
-    raw_final_score = float(np.dot(scores, new_weights)) / 8.0
+    # Strictly compute final score utilizing the current synchronized blockchain weight matrix
+    raw_final_score = float(np.dot(scores, active_weights)) / 8.0
     final_score = float(raw_final_score * (0.7 + (logic_integrity / 333.3)))
     
     drift = calculate_complex_drift(scope_alignment, scores) if scope.strip() else "N/A"
     rec = get_recommendation_spectrum(final_score, drift) if scope.strip() else "N/A"
     
     timestamp = datetime.now().isoformat()
-    cursor.execute('''INSERT INTO papers_assessment (eval_hash, user_id, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, logic_score, scope_alignment, subfields, fields, final_score, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                   (file_hash, user_id, title, filename, scope, *scores, logic_integrity, scope_alignment, json.dumps(subfields), json.dumps(fields), final_score, timestamp))
+    cursor.execute('''INSERT INTO papers_assessment (eval_hash, user_id, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, logic_score, scope_alignment, subfields, fields, author_name, final_score, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                   (file_hash, user_id, title, filename, scope, *scores, logic_integrity, scope_alignment, json.dumps(subfields), json.dumps(fields), author_name, final_score, timestamp))
     conn.commit()
     
-    return title, final_score, logic_integrity, drift, rec, fields, subfields, scores_dict, file_hash
+    return title, author_name, final_score, logic_integrity, drift, rec, fields, subfields, scores_dict, file_hash
 
 # --- 4. TOPOLOGICAL MAPPING (INTERACTIVE PYVIS NETWORK) ---
-def generate_interactive_bubble_chart(user_id, target_scope=None):
+def generate_interactive_bubble_chart(user_id, target_author=None):
     cursor = conn.cursor()
     
-    if target_scope:
-        cursor.execute("SELECT fields, subfields, final_score FROM papers_assessment WHERE user_id=? AND scope=?", (user_id, target_scope))
+    if target_author and target_author != "All Authors":
+        cursor.execute("SELECT fields, subfields, final_score FROM papers_assessment WHERE user_id=? AND author_name=?", (user_id, target_author))
     else:
         cursor.execute("SELECT fields, subfields, final_score FROM papers_assessment WHERE user_id=?", (user_id,))
         
@@ -426,7 +441,7 @@ def generate_interactive_bubble_chart(user_id, target_scope=None):
     unique_topics = topic_counts['topic'].unique()
     
     def get_color(i, n):
-        h, s, v = i/n, 0.7, 0.9
+        h, s, v = i/n if n > 0 else 0, 0.7, 0.9
         rgb = colorsys.hsv_to_rgb(h, s, v)
         return '#%02x%02x%02x' % tuple(int(x * 255) for x in rgb)
     
@@ -601,7 +616,7 @@ with tab1:
             for i, file in enumerate(uploaded_files):
                 status_text.text(f"Analyzing {i+1} of {len(uploaded_files)}: {file.name}...")
                 
-                title, score, logic_integrity, drift, rec, fields, subfields, scores_dict, eval_hash = process_single_pdf(
+                title, author_name, score, logic_integrity, drift, rec, fields, subfields, scores_dict, eval_hash = process_single_pdf(
                     file.read(), file.name, research_scope, current_user
                 )
                 
@@ -610,6 +625,7 @@ with tab1:
                 record = {
                     "No.": i + 1,
                     "File Name": file.name,
+                    "Primary Author": author_name,
                     "Fields & Subfields": combined_fields,
                     "Logic Integrity (%)": round(logic_integrity, 1),
                     "π-Index (0-100)": round(score, 1),
@@ -650,11 +666,11 @@ with tab1:
     
     if st.session_state.is_authenticated:
         cursor = conn.cursor()
-        cursor.execute("SELECT title, scope, final_score, timestamp, eval_hash FROM papers_assessment WHERE user_id=? ORDER BY timestamp DESC LIMIT 20", (current_user,))
+        cursor.execute("SELECT title, author_name, scope, final_score, timestamp, eval_hash FROM papers_assessment WHERE user_id=? ORDER BY timestamp DESC LIMIT 20", (current_user,))
         history_data = cursor.fetchall()
         
         if history_data:
-            df_hist = pd.DataFrame(history_data, columns=["Paper Title", "Scope", "π-Index Score", "Date", "Evaluation Hash"])
+            df_hist = pd.DataFrame(history_data, columns=["Paper Title", "Primary Author", "Scope", "π-Index Score", "Date", "Evaluation Hash"])
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
         else:
             st.info("No assessment history found for your account.")
@@ -662,21 +678,21 @@ with tab1:
         st.warning("🔒 Please connect your ORCID iD in the sidebar to view your private assessment history.")
 
 with tab2:
-    st.subheader("Epistemic Bubbles (Portfolio Cartography)")
-    st.write("This map automatically grows to reflect the collective data of all papers you have assessed over time.")
+    st.subheader("Epistemic Bubbles (Author & Portfolio Cartography)")
+    st.write("Filter the topological network map below by the extracted primary author names of your evaluated papers.")
     
-    # Query database for all unique scopes the user has evaluated
+    # Query database for all unique author names the user has evaluated
     cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT scope FROM papers_assessment WHERE user_id=?", (current_user,))
-    user_scopes = [row[0] for row in cursor.fetchall() if row[0] and row[0].strip()]
+    cursor.execute("SELECT DISTINCT author_name FROM papers_assessment WHERE user_id=?", (current_user,))
+    user_authors = [row[0] for row in cursor.fetchall() if row[0] and row[0].strip()]
     
-    selected_scope = None
-    if user_scopes:
-        filter_choice = st.selectbox("Filter Cartography by Scope:", ["All Assessed Papers"] + user_scopes)
-        if filter_choice != "All Assessed Papers":
-            selected_scope = filter_choice
+    selected_author = None
+    if user_authors:
+        filter_choice = st.selectbox("Filter Cartography by Primary Author:", ["All Authors"] + user_authors)
+        if filter_choice != "All Authors":
+            selected_author = filter_choice
 
-    interactive_html, table_html = generate_interactive_bubble_chart(current_user, target_scope=selected_scope)
+    interactive_html, table_html = generate_interactive_bubble_chart(current_user, target_author=selected_author)
     
     if interactive_html:
         col1, col2 = st.columns([3, 1])
@@ -686,7 +702,7 @@ with tab2:
             st.markdown("### Legend")
             st.markdown(table_html, unsafe_allow_html=True)
     else: 
-        st.info("Awaiting sufficient data for this user. Upload and process papers to build your map.")
+        st.info("Awaiting sufficient data for this user. Upload and process papers to build your author-filtered map.")
 
 with tab3:
     cursor = conn.cursor()
@@ -773,7 +789,6 @@ with tab4:
         
         current_block_count = len(historical_rows)
         
-        # Determine if a fresh training loop is needed or if we can use the cached weights
         if 'last_trained_blocks' not in st.session_state or st.session_state.last_trained_blocks != current_block_count:
             st.markdown("### Training Log (Auto-Running)")
             weight_data = np.array(historical_rows, dtype=np.float32)
@@ -809,7 +824,6 @@ with tab4:
             status_text.success("Training Complete!")
             progress_bar.progress(1.0)
             
-            # Run Inference for Next Epoch
             model.eval()
             recent_blocks = weight_data[-lookback_window:]
             seq_tensor = torch.tensor(recent_blocks, dtype=torch.float32).unsqueeze(0)
@@ -817,7 +831,6 @@ with tab4:
             with torch.no_grad():
                 next_weights = model(seq_tensor).squeeze().numpy()
             
-            # Cache the newly trained states so Streamlit doesn't repeatedly lag the UI
             st.session_state.predicted_next_weights = next_weights
             st.session_state.current_weights = weight_data[-1]
             st.session_state.last_trained_blocks = current_block_count
