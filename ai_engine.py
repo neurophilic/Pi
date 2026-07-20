@@ -116,6 +116,10 @@ Text: {text}
 
 def process_single_pdf(file_bytes, filename, scope, user_id):
     """Main workflow to process a single PDF file and grade it."""
+    # Guard clause: Validate file_bytes is not None or empty
+    if file_bytes is None or len(file_bytes) == 0:
+        return None
+    
     file_hash = hashlib.sha256(file_bytes).hexdigest() 
     cursor = conn.cursor()
     
