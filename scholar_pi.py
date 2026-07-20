@@ -489,6 +489,21 @@ def generate_interactive_bubble_chart(user_id, target_author=None):
     
     os.remove(tmp_file.name)
     
+    # Inject a robust client-side cache buster script right before the closing body tag
+    cache_invalidation_script = f"""
+    <script>
+        console.log("Cartography refreshed at timestamp: {time.time()}");
+        if (window.performance && window.performance.navigation.type === window.performance.navigation.TYPE_RELOAD) {{
+            console.info("Page was reloaded - rebuilding graph viewport.");
+        }}
+    </script>
+    </body>
+    """
+    if "</body>" in html_string:
+        html_string = html_string.replace("</body>", cache_invalidation_script)
+    else:
+        html_string += cache_invalidation_script
+
     table_html = "<style>.table-big { width: 100%; font-size: 14px; border-collapse: collapse; margin-top: 10px; font-family: sans-serif; } .table-big th { background-color: #2c3e50; color: white; padding: 10px; text-align: left; } .table-big td { border-bottom: 1px solid #ddd; padding: 8px; vertical-align: middle; } .color-box { width: 18px; height: 18px; display: inline-block; border-radius: 3px; border: 1px solid #ccc; margin: 0 auto;} .legend-container { max-height: 550px; overflow-y: auto; border: 1px solid #eee; }</style>"
     table_html += "<div class='legend-container'><table class='table-big'><thead><tr><th style='width: 25%; text-align: center;'>Color</th><th>Topic</th></tr></thead><tbody>"
     
@@ -692,14 +707,13 @@ with tab2:
         if filter_choice != "All Authors":
             selected_author = filter_choice
 
+    # Force a unique container container wrap that changes every request to prevent browser-level iframe caching
     interactive_html, table_html = generate_interactive_bubble_chart(current_user, target_author=selected_author)
     
     if interactive_html:
         col1, col2 = st.columns([3, 1])
         with col1:
-            # Inject a dynamic HTML comment buster to force Streamlit's iframe component to update on every run
-            dynamic_html_payload = f"<!-- CacheBuster:{time.time()} -->\n" + interactive_html
-            components.html(dynamic_html_payload, height=620, scrolling=True)
+            components.html(interactive_html, height=620, scrolling=True)
         with col2:
             st.markdown("### Legend")
             st.markdown(table_html, unsafe_allow_html=True)
