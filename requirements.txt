@@ -1,7 +1,9 @@
 streamlit
+sqlite3
+requests
 numpy
-networkx
-plotly
-PyMuPDF
+pandas
+pymupdf
 groq
 pyvis
+torch
