@@ -1,13 +1,4 @@
-The root cause is that Large Language Models (LLMs) running at `temperature=0.0` with strict JSON formatting constraints can sometimes struggle to locate or output metadata fields if the prompt doesn't isolate them strictly, or if the extracted text string passed to it truncates the top header block where the author names reside.
 
-To permanently fix the "Unknown Author" issue, we need to ensure two things:
-
-1. **Prioritize the first page's text layout** (or pass the text of the first page explicitly first, since author names are always at the top of page 1).
-2. **Enforce fallback logic in Python** so that if the LLM still returns an empty or unknown value, the system extracts the embedded PDF file metadata (`doc.metadata["author"]`) or parses the file name.
-
-Here is the fully corrected, drop-in replacement code. This updates `process_single_pdf` to pull native PDF metadata as a robust fallback and refines the LLM prompt structure:
-
-```python
 import os
 import sqlite3
 import json
@@ -873,4 +864,4 @@ with tab4:
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_app_html=True)
 
-```
+
