@@ -1,3 +1,4 @@
+
 import os
 import sqlite3
 import json
@@ -347,7 +348,7 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
 
 # --- 5. NETWORK GRAPH CARTOGRAPHY ---
 
-def generate_interactive_bubble_chart(user_id, target_author=None):
+def generate_interactive_bubble_chart(user_id, target_author=None, update_token=None):
     cursor = conn.cursor()
     if target_author and target_author != "All Authors":
         cursor.execute("SELECT fields, subfields, final_score FROM papers_assessment WHERE user_id=? AND author_name LIKE ?", (user_id, f"%{target_author}%"))
@@ -362,7 +363,8 @@ def generate_interactive_bubble_chart(user_id, target_author=None):
         try:
             fields = [f.title().strip() for f in json.loads(fields_json)]
             subfields = [s.title().strip() for s in json.loads(subfields_json)]
-            score = float(final_score) if final_score else 50.0
+            # Round score to fix long floats in the tooltips
+            score = round(float(final_score), 2) if final_score else 50.00
             for f in fields: all_topics.append({'topic': f, 'weight': score})
             for s in subfields: all_topics.append({'topic': s, 'weight': score})
         except: continue
@@ -382,7 +384,8 @@ def generate_interactive_bubble_chart(user_id, target_author=None):
     net.set_options('{"physics": {"barnesHut": {"gravitationalConstant": -1000, "centralGravity": 1, "springLength": 100, "avoidOverlap": 1.0}, "stabilization": {"enabled": true, "iterations": 500, "fit": true}}}')
     
     for _, row in topic_counts.iterrows():
-        net.add_node(n_id=row['topic'], label=' ', title=f"Topic: {row['topic']} | Weight: {row['weight']}", size=30 + (row['weight'] * 2.5), physics=True, color=color_map[row['topic']])
+        # Ensure the row weight is rounded in the node title as well
+        net.add_node(n_id=row['topic'], label=' ', title=f"Topic: {row['topic']} | Weight: {round(row['weight'], 2)}", size=30 + (row['weight'] * 2.5), physics=True, color=color_map[row['topic']])
     
     with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp_file:
         net.save_graph(tmp_file.name)
@@ -390,7 +393,9 @@ def generate_interactive_bubble_chart(user_id, target_author=None):
             html_string = f.read()
     os.remove(tmp_file.name)
 
-    html_string = html_string.replace('mynetwork', f"pi_network_{int(time.time() * 1000)}")
+    # Vigorously bust the iFrame cache by binding the ID to the assessment token
+    cache_buster = f"{int(time.time() * 1000)}_{str(update_token).replace('.', '')}"
+    html_string = html_string.replace('mynetwork', f"pi_network_{cache_buster}")
 
     table_html = "<style>.table-big { width: 100%; font-size: 14px; border-collapse: collapse; margin-top: 10px; font-family: sans-serif; } .table-big th { background-color: #2c3e50; color: white; padding: 10px; text-align: left; } .table-big td { border-bottom: 1px solid #ddd; padding: 8px; vertical-align: middle; } .color-box { width: 18px; height: 18px; display: inline-block; border-radius: 3px; border: 1px solid #ccc; margin: 0 auto;} .legend-container { max-height: 550px; overflow-y: auto; border: 1px solid #eee; }</style>"
     table_html += "<div class='legend-container'><table class='table-big'><thead><tr><th style='width: 25%; text-align: center;'>Color</th><th>Topic</th></tr></thead><tbody>"
@@ -521,10 +526,15 @@ with tab2:
     
     selected_author = None
     if user_authors:
-        filter_choice = st.selectbox("Filter Cartography by Primary Author:", ["All Authors"] + user_authors, key="author_filter_dropdown")
+        # Dynamically link the widget key to the update token to force a widget remount on new data
+        dynamic_key = f"author_filter_{st.session_state.get('assessment_update_token', 'init')}"
+        filter_choice = st.selectbox("Filter Cartography by Primary Author:", ["All Authors"] + user_authors, key=dynamic_key)
         if filter_choice != "All Authors": selected_author = filter_choice
 
-    interactive_html, table_html = generate_interactive_bubble_chart(current_user, target_author=selected_author)
+    # Pass the token down to the cartography generator
+    current_token = st.session_state.get('assessment_update_token', time.time())
+    interactive_html, table_html = generate_interactive_bubble_chart(current_user, target_author=selected_author, update_token=current_token)
+    
     if interactive_html:
         col1, col2 = st.columns([3, 1])
         with col1: components.html(interactive_html, height=620, scrolling=True)
@@ -647,3 +657,5 @@ with tab4:
 
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
+
+```
