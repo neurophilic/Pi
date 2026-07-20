@@ -599,7 +599,7 @@ with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
         st.markdown("**C7: Empirical Density**\nEvaluates data depth utilizing Fisher information metrics.")
         st.markdown(r"$$E_d = \varpi_7 \cdot \tanh \left( \frac{\det \mathcal{I}_{Fisher}(\hat{\theta}) \cdot \mathbb{E}_{P}\left[\log\frac{P}{Q}\right]}{\mathcal{V}_{baseline} \cdot \oint_\Gamma \omega_{data}} \right) \times \sum_{d=1}^D \lambda_d \kappa_d \times 100 $$")
         st.markdown("**C8: Future Actionability**\nDetermines continuation potential using Lyapunov exponents.")
-        st.markdown(r"$$F_a = \varpi_8 \cdot \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\x) \times 100 $$")
+        st.markdown(r"$$F_a = \varpi_8 \cdot \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\mathbf{x}) \times 100 $$")
 
 tab1, tab2, tab3, tab4 = st.tabs(["Batch Assessment", "Scope Cartography", "Active Epoch Constants", "π-Brain Neural Network"])
 
@@ -655,11 +655,8 @@ with tab1:
                 
             status_text.text("Batch processing complete!")
             
-            # Reset session states so bubble charts, history tables, and ML models refresh instantly
-            if 'last_trained_blocks' in st.session_state:
-                del st.session_state['last_trained_blocks']
-            if 'bubble_cache_key' in st.session_state:
-                st.session_state.bubble_cache_key = time.time()
+            st.session_state['last_trained_blocks'] = -1
+            st.session_state['cache_buster_timestamp'] = time.time()
             
             df = pd.DataFrame(results)
             df_display = df.sort_values(by=["π-Index (0-100)"], ascending=False)
@@ -699,6 +696,7 @@ with tab2:
         if filter_choice != "All Authors":
             selected_author = filter_choice
 
+    # Unconditionally rebuild chart on every interaction/request to ensure real-time synchronization
     interactive_html, table_html = generate_interactive_bubble_chart(current_user, target_author=selected_author)
     
     if interactive_html:
@@ -720,11 +718,10 @@ with tab3:
         block_height, weights, model_used, eval_hash, block_hash = epoch_data[0], epoch_data[1:9], epoch_data[9], epoch_data[10], epoch_data[11]
         current_pi_base = get_pi_float(block_height)
         
-        # Calculate total papers processed from the global blockchain database ledger records
         cursor.execute("SELECT COUNT(DISTINCT eval_hash) FROM blockchain_por_weights WHERE eval_hash != 'genesis'")
         total_papers_processed = cursor.fetchone()[0]
 
-        st.markdown(f"**Total Papers Processed (Blockchain Ledger):** `{total_papers_processed}` | **Last Model Orchestration:** `{model_used}` | **Epoch Block:** `{block_height}` | **Pi Acc:** `{current_pi_base}`")
+        st.markdown(f"**Total Papers Processed (Blockchain Ledger):** `{total_papers_processed}` | **Block Size:** `{EPOCH_BLOCK_SIZE} papers/block` | **Epoch Frequency:** `Every {EPOCH_BLOCK_SIZE} evaluations` | **Last Model:** `{model_used}` | **Epoch Block:** `{block_height}` | **Pi Acc:** `{current_pi_base}`")
         
         st.markdown(r"""
         **Weight Evolution Dynamics:**
