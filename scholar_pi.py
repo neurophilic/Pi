@@ -195,17 +195,38 @@ def compute_formulaic_criteria(v):
     
     return {k: round(v, 2) for k, v in scores.items()}
 
-def evaluate_pdf_text(text, scope, model, text_limit):
+def evaluate_scope_alignment(text, scope, model, text_limit):
+    if not scope.strip():
+        return 0.0
+    
+    if len(text) > text_limit:
+        text = text[:text_limit]
+        
+    prompt = f"""You are a research alignment tool.
+Read the following paper text and evaluate how well it aligns with this specific research scope/keyword: "{scope}"
+Return ONLY a valid JSON object with a single key "Scope_Alignment" containing a float between 0.0 and 100.0.
+{{
+    "Scope_Alignment": 85.5
+}}
+Text: {text}
+"""
+    try:
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=model,
+            temperature=0.0,
+            response_format={"type": "json_object"}
+        )
+        return float(json.loads(response.choices[0].message.content).get("Scope_Alignment", 0.0))
+    except:
+        return 0.0
+
+def evaluate_pdf_text(text, model, text_limit):
     if len(text) > text_limit:
         text = text[:text_limit]
 
-    if scope.strip():
-        scope_instruction = f'Evaluate "Scope_Alignment" (0-100) based on this specific project scope: "{scope}"'
-    else:
-        scope_instruction = 'Set "Scope_Alignment" to 0, as no specific project scope was provided.'
-
     prompt = f"""You are the theoretical parser for the π-Index Assessment Engine.
-Instead of assigning arbitrary scores, you must read the academic paper and extract the underlying mathematical proxy variables.
+Instead of assigning arbitrary scores, you must read the academic paper and extract the underlying mathematical proxy variables based purely on the document's objective scientific merit.
 
 CRITICAL INSTRUCTION - FORCE EXTREME VARIANCE:
 Do NOT cluster your variables around 0.5. If a paper is weak or standard, use values between 0.0 and 0.3. If exceptional, use 0.8 to 1.0. 
@@ -245,12 +266,9 @@ Identify logical structural flaws and gaps in reasoning:
 - `Logical_Jumps`: (0.1 = Highly logical flow, 0.9 = Major non-sequiturs).
 - `Premise_Validity`: (0.1 = Questionable assumptions, 0.9 = Solid definitions).
 
-{scope_instruction}
-
 Return ONLY a valid JSON object matching exactly this structure:
 {{
     "Extracted_Title": "Title", 
-    "Scope_Alignment": 85,
     "variables": {{
         "H_novel": 0.8, "K_epistemic": 0.7, "zeta": 0.5, "I_existing": 0.5, "Sigma_error": 0.1, "mu_signal": 0.9, "rho_k": 0.8,
         "p_disciplines": [0.6, 0.4], "bridge_capacity": 0.8, "Utility_vector": 0.7, "decay_rate": 0.2, "q_fractional": 1.2,
@@ -269,7 +287,7 @@ Text: {text}
     response = client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model=model, 
-        temperature=0.1, 
+        temperature=0.0, 
         seed=SEED_NUMBER, 
         response_format={"type": "json_object"}
     )
@@ -291,34 +309,41 @@ def get_recommendation_spectrum(score, drift):
     return "Tier VI: Orthogonal / Unrelated Noise"
 
 def process_single_pdf(file_bytes, filename, scope, user_id):
-    file_hash = hashlib.sha256(file_bytes + user_id.encode('utf-8')).hexdigest()
+    file_hash = hashlib.sha256(file_bytes).hexdigest() 
     cursor = conn.cursor()
-    cursor.execute("SELECT final_score, scope_alignment, logic_score, title, fields, subfields, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment WHERE eval_hash=? AND user_id=?", (file_hash, user_id))
+    
+    # Check cache based purely on the document, NOT the scope
+    cursor.execute("SELECT final_score, logic_score, title, fields, subfields, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment WHERE eval_hash=? AND user_id=?", (file_hash, user_id))
     cached = cursor.fetchone()
     
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    text = " ".join([page.get_text() for page in doc]) 
+    
+    # Dynamically calculate Scope Alignment (always fresh based on the keyword)
+    scope_alignment = evaluate_scope_alignment(text, scope, FALLBACK_MODEL, MAX_TEXT_TOKENS) if scope.strip() else 0.0
+
     if cached:
-        score, alignment, logic_score, title, fields_str, subfields_str, c1, c2, c3, c4, c5, c6, c7, c8 = cached
+        score, logic_score, title, fields_str, subfields_str, c1, c2, c3, c4, c5, c6, c7, c8 = cached
         fields = json.loads(fields_str) if fields_str else ["General Science"]
         subfields = json.loads(subfields_str) if subfields_str else ["General"]
         scores_array = [c1, c2, c3, c4, c5, c6, c7, c8]
         
-        drift = calculate_complex_drift(alignment, scores_array) if scope.strip() else "N/A"
+        # Calculate dynamic drift based on the new keyword's alignment
+        drift = calculate_complex_drift(scope_alignment, scores_array) if scope.strip() else "N/A"
         rec = get_recommendation_spectrum(score, drift) if scope.strip() else "N/A"
         scores_dict = {"C1_Originality": c1, "C2_Methodological_Rigor": c2, "C3_Interdisciplinary": c3, "C4_Societal_Impact": c4, "C5_Open_Science_Potential": c5, "C6_Literature_Integration": c6, "C7_Empirical_Density": c7, "C8_Future_Actionability": c8}
         
         return title, score, logic_score, drift, rec, fields, subfields, scores_dict, file_hash
 
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
-    text = " ".join([page.get_text() for page in doc]) 
-    
+    # IF NOT CACHED: Run the heavy Pi-Index calculation (Static document metrics)
     try:
-        raw_data = evaluate_pdf_text(text, scope, PRIMARY_MODEL, MAX_TEXT_TOKENS)
+        raw_data = evaluate_pdf_text(text, PRIMARY_MODEL, MAX_TEXT_TOKENS)
         model_used = PRIMARY_MODEL
     except Exception as e:
         st.warning(f"Primary model limit hit. Failing over to {FALLBACK_MODEL}...")
         try:
             reduced_limit = MAX_TEXT_TOKENS // 2 if 'limit' in str(e).lower() or '413' in str(e) else MAX_TEXT_TOKENS
-            raw_data = evaluate_pdf_text(text, scope, FALLBACK_MODEL, reduced_limit)
+            raw_data = evaluate_pdf_text(text, FALLBACK_MODEL, reduced_limit)
             model_used = FALLBACK_MODEL
         except Exception as e2:
             st.error(f"Both models failed. API Error: {str(e2)}")
@@ -339,7 +364,6 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     logic_vars = raw_data.get("logic_analysis", {})
     logic_integrity = compute_logical_integrity(logic_vars)
 
-    # BLOCKCHAIN EVOLUTION CHECK (now configurable)
     if total_evals % EPOCH_BLOCK_SIZE == 0:
         new_weights = calculate_model_driven_weights(old_weights, scores, model_used, block_height)
         timestamp = datetime.now().isoformat()
@@ -349,7 +373,6 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     else:
         new_weights = old_weights
 
-    scope_alignment = raw_data.get("Scope_Alignment", 0.0)
     title = raw_data.get("Extracted_Title", filename)
     fields, subfields = raw_data.get("fields", ["General Science"]), raw_data.get("subfields", ["General"])
     
@@ -360,9 +383,11 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     rec = get_recommendation_spectrum(final_score, drift) if scope.strip() else "N/A"
     
     timestamp = datetime.now().isoformat()
+    # Notice we save scope_alignment here, but we will always overwrite it dynamically when reading from cache
     cursor.execute('''INSERT INTO papers_assessment (eval_hash, user_id, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, logic_score, scope_alignment, subfields, fields, final_score, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                    (file_hash, user_id, title, filename, scope, *scores, logic_integrity, scope_alignment, json.dumps(subfields), json.dumps(fields), final_score, timestamp))
     conn.commit()
+    
     return title, final_score, logic_integrity, drift, rec, fields, subfields, scores_dict, file_hash
 
 # --- 4. TOPOLOGICAL MAPPING (INTERACTIVE PYVIS NETWORK) ---
@@ -536,10 +561,6 @@ with tab1:
         if not uploaded_files:
             st.warning("⚠️ Please upload at least one academic paper (PDF) to proceed.")
         else:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM papers_assessment WHERE user_id=?", (current_user,))
-            conn.commit()
-
             results = []
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -575,7 +596,7 @@ with tab1:
                     "C6": round(scores_dict.get("C6_Literature_Integration", 0.0), 1),
                     "C7": round(scores_dict.get("C7_Empirical_Density", 0.0), 1),
                     "C8": round(scores_dict.get("C8_Future_Actionability", 0.0), 1),
-                    "Eval Hash (Document)": eval_hash # Moved to the far right side of the results table
+                    "Eval Hash (Document)": eval_hash 
                 })
                 
                 results.append(record)
