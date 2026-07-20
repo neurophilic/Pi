@@ -6,7 +6,7 @@ from config import DB_PATH
 
 def init_system():
     """Set up the SQLite database tables if they don't exist yet."""
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0)
     cursor = conn.cursor()
     
     # Main table for storing evaluated papers
