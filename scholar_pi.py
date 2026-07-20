@@ -1,3 +1,4 @@
+
 import os
 import sqlite3
 import json
@@ -600,6 +601,10 @@ def generate_interactive_bubble_chart(user_id, target_author=None):
     # ----------------------------------------------------------------------
     # THE ULTIMATE CACHE BUSTER FOR STREAMLIT IFRAMES
     # ----------------------------------------------------------------------
+    # PyVis hardcodes the CSS ID of the graph container as 'mynetwork'. 
+    # By replacing this with a randomly generated ID on every single click,
+    # the browser DOM physically changes, forcing Streamlit to completely 
+    # wipe the old iframe and draw the updated data.
     unique_network_id = f"pi_network_{int(time.time() * 1000)}"
     html_string = html_string.replace('mynetwork', unique_network_id)
 
@@ -653,10 +658,6 @@ class PiBrainLSTM(nn.Module):
 # --- 6. USER INTERFACE (STREAMLIT) ---
 
 st.sidebar.title("System Access")
-
-# Initialize global assessment tokens to force UI updates on new data
-if 'assessment_update_token' not in st.session_state:
-    st.session_state['assessment_update_token'] = time.time()
 
 # Track if the user is logged in
 if 'orcid_id' not in st.session_state:
@@ -787,17 +788,12 @@ with tab1:
                 
             status_text.success("Batch processing complete! Here are your results:")
             
-            # Save the results directly into session state so they persist between Tab 2 redraws
+            # Show the results directly on the screen so the user can see them!
             results_df = pd.DataFrame(results_list)
-            st.session_state['latest_assessment_results'] = results_df
+            st.dataframe(results_df, use_container_width=True, hide_index=True)
             
-            # Explicitly force Tab 2 elements to completely reset / redraw upon switching
-            st.session_state['assessment_update_token'] = time.time()
+            # Trigger meta-learning model to retrain next time Tab 4 is opened
             st.session_state['last_trained_blocks'] = -1
-            
-    # Always display the assessment results if they exist, preventing them from vanishing when changing filters in Tab 2
-    if 'latest_assessment_results' in st.session_state:
-        st.dataframe(st.session_state['latest_assessment_results'], use_container_width=True, hide_index=True)
 
     st.markdown("---")
     st.markdown("### Latest Assessment History")
@@ -821,26 +817,25 @@ with tab2:
     st.write("Filter the topological network map below by the extracted primary author names of your evaluated papers.")
     
     cursor = conn.cursor()
-    # Pull fresh authors directly from the database
+    # Fix: Get all authors, clean up whitespace, remove empty entries, and sort alphabetically
     cursor.execute("SELECT DISTINCT author_name FROM papers_assessment WHERE user_id=?", (current_user,))
     raw_authors = cursor.fetchall()
     
+    # Use a set to remove accidental duplicates after stripping spaces
     user_authors = sorted(list(set([row[0].strip() for row in raw_authors if row[0] and row[0].strip()])))
     
     selected_author = None
     if user_authors:
-        # Dynamically append the update token to the widget key. This forces Streamlit to destroy and recreate 
-        # the dropdown whenever a new assessment completes, guaranteeing it captures newly added authors 
-        # and doesn't get stuck caching an old configuration.
+        # Fix: Add a unique key so Streamlit remembers the selection when you switch tabs
         filter_choice = st.selectbox(
             "Filter Cartography by Primary Author:", 
             ["All Authors"] + user_authors,
-            key=f"author_filter_dropdown_{st.session_state['assessment_update_token']}"
+            key="author_filter_dropdown"
         )
         if filter_choice != "All Authors":
             selected_author = filter_choice
 
-    # Generate the map HTML string based on the active selection
+    # Generate the map HTML string
     interactive_html, table_html = generate_interactive_bubble_chart(current_user, target_author=selected_author)
     
     if interactive_html:
