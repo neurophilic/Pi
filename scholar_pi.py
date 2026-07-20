@@ -1,4 +1,3 @@
-
 import os
 import sqlite3
 import json
@@ -239,11 +238,11 @@ def evaluate_pdf_text(text, model, text_limit):
 Instead of assigning arbitrary scores, you must read the academic paper and extract the underlying mathematical proxy variables based purely on the document's objective scientific merit.
 
 CRITICAL INSTRUCTION - AUTHOR EXTRACTION:
-Carefully look at the header region and first page of the text to find the paper title and the primary or corresponding author(s). Strip away numbers, asterisks, email addresses, and university affiliation footnotes, leaving only the clean human author name(s) (e.g., "Jane Doe" or "John Smith"). Do NOT leave this blank or default to unknown if names are present.
+Carefully look at the first page of the text to find the actual names of the human authors written below the title. Look for names formatted like "Firstname Lastname" or "Author Name". Do NOT use the file name, do NOT use university names, do NOT use journal names, and do NOT write "Unknown Author". If multiple authors exist, provide the primary/first author name followed by "et al." (e.g. "Jane Doe et al.").
 
 1. Extracted Metadata:
 - `Extracted_Title`: The full title of the paper.
-- `Extracted_Author`: The primary author name(s) cleanly formatted.
+- `Extracted_Author`: The primary author name(s).
 
 2. Extracted Variables (all values must be floats between 0.0 and 1.0, unless specified):
 - `H_novel`: Conceptual novelty (0.1 = derivative, 0.9 = groundbreaking).
@@ -326,49 +325,43 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     file_hash = hashlib.sha256(file_bytes).hexdigest() 
     cursor = conn.cursor()
     
-    # Check cache based purely on the document, NOT the scope
     cursor.execute("SELECT final_score, logic_score, title, fields, subfields, author_name, c1, c2, c3, c4, c5, c6, c7, c8 FROM papers_assessment WHERE eval_hash=? AND user_id=?", (file_hash, user_id))
     cached = cursor.fetchone()
     
     doc = fitz.open(stream=file_bytes, filetype="pdf")
-    # Pull metadata author fallback directly from PDF file metadata if available
     pdf_meta_author = doc.metadata.get("author", "").strip()
     
-    text = " ".join([page.get_text() for page in doc]) 
+    full_text = " ".join([page.get_text() for page in doc]) 
     
-    # Dynamically calculate Scope Alignment (always fresh based on the keyword)
-    scope_alignment = evaluate_scope_alignment(text, scope, FALLBACK_MODEL, MAX_TEXT_TOKENS) if scope.strip() else 0.0
+    scope_alignment = evaluate_scope_alignment(full_text, scope, FALLBACK_MODEL, MAX_TEXT_TOKENS) if scope.strip() else 0.0
 
     if cached:
         score, logic_score, title, fields_str, subfields_str, author_name, c1, c2, c3, c4, c5, c6, c7, c8 = cached
         fields = json.loads(fields_str) if fields_str else ["General Science"]
         subfields = json.loads(subfields_str) if subfields_str else ["General"]
         
-        # Fallback fix if author name was previously stored as Unknown
-        if not author_name or author_name == "Unknown Author":
-            author_name = pdf_meta_author or os.path.splitext(filename)[0]
+        if not author_name or author_name == "Unknown Author" or author_name == os.path.splitext(filename)[0]:
+            author_name = pdf_meta_author or "Research Scholar"
 
         scores_array = [c1, c2, c3, c4, c5, c6, c7, c8]
-        
         drift = calculate_complex_drift(scope_alignment, scores_array) if scope.strip() else "N/A"
         rec = get_recommendation_spectrum(score, drift) if scope.strip() else "N/A"
         scores_dict = {"C1_Originality": c1, "C2_Methodological_Rigor": c2, "C3_Interdisciplinary": c3, "C4_Societal_Impact": c4, "C5_Open_Science_Potential": c5, "C6_Literature_Integration": c6, "C7_Empirical_Density": c7, "C8_Future_Actionability": c8}
         
         return title, author_name, score, logic_score, drift, rec, fields, subfields, scores_dict, file_hash
 
-    # IF NOT CACHED: Run the heavy Pi-Index calculation and pull the latest active blockchain weights
     try:
-        raw_data = evaluate_pdf_text(text, PRIMARY_MODEL, MAX_TEXT_TOKENS)
+        raw_data = evaluate_pdf_text(full_text, PRIMARY_MODEL, MAX_TEXT_TOKENS)
         model_used = PRIMARY_MODEL
     except Exception as e:
         st.warning(f"Primary model limit hit. Failing over to {FALLBACK_MODEL}...")
         try:
             reduced_limit = MAX_TEXT_TOKENS // 2 if 'limit' in str(e).lower() or '413' in str(e) else MAX_TEXT_TOKENS
-            raw_data = evaluate_pdf_text(text, FALLBACK_MODEL, reduced_limit)
+            raw_data = evaluate_pdf_text(full_text, FALLBACK_MODEL, reduced_limit)
             model_used = FALLBACK_MODEL
         except Exception as e2:
             st.error(f"Both models failed. API Error: {str(e2)}")
-            fallback_author = pdf_meta_author or os.path.splitext(filename)[0]
+            fallback_author = pdf_meta_author or "Research Scholar"
             return "Extraction Failed", fallback_author, 0.0, 0.0, "N/A", "N/A", ["Unknown"], ["Unknown"], {k: 0.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]}, "Failed"
         
     cursor.execute("UPDATE global_eval_counter SET count = count + 1")
@@ -398,10 +391,9 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
 
     title = raw_data.get("Extracted_Title", filename)
     
-    # Comprehensive resolution chain for Author Name: LLM output -> PDF embedded metadata -> Cleaned filename fallback
     extracted_author = raw_data.get("Extracted_Author", "").strip()
-    if not extracted_author or extracted_author.lower() in ["unknown", "unknown author", "none", "n/a"]:
-        extracted_author = pdf_meta_author or os.path.splitext(filename)[0]
+    if not extracted_author or extracted_author.lower() in ["unknown", "unknown author", "none", "n/a"] or extracted_author == os.path.splitext(filename)[0]:
+        extracted_author = pdf_meta_author or "Research Scholar"
 
     fields, subfields = raw_data.get("fields", ["General Science"]), raw_data.get("subfields", ["General"])
     
@@ -567,7 +559,7 @@ if not st.session_state.is_authenticated:
         else:
             st.sidebar.error("Invalid format. Please use XXXX-XXXX-XXXX-XXXX")
 else:
-    st.sidebar.success("✅ Securely Connected")
+    st.sidebar.success("Securely Connected")
     st.sidebar.markdown(f"**Researcher:** {st.session_state.orcid_name}")
     st.sidebar.markdown(f"**ORCID iD:** `{st.session_state.orcid_id}`")
     if st.sidebar.button("Disconnect Session"):
@@ -607,7 +599,7 @@ with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
         st.markdown("**C7: Empirical Density**\nEvaluates data depth utilizing Fisher information metrics.")
         st.markdown(r"$$E_d = \varpi_7 \cdot \tanh \left( \frac{\det \mathcal{I}_{Fisher}(\hat{\theta}) \cdot \mathbb{E}_{P}\left[\log\frac{P}{Q}\right]}{\mathcal{V}_{baseline} \cdot \oint_\Gamma \omega_{data}} \right) \times \sum_{d=1}^D \lambda_d \kappa_d \times 100 $$")
         st.markdown("**C8: Future Actionability**\nDetermines continuation potential using Lyapunov exponents.")
-        st.markdown(r"$$F_a = \varpi_8 \cdot \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\mathbf{x}) \times 100 $$")
+        st.markdown(r"$$F_a = \varpi_8 \cdot \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\x) \times 100 $$")
 
 tab1, tab2, tab3, tab4 = st.tabs(["Batch Assessment", "Scope Cartography", "Active Epoch Constants", "π-Brain Neural Network"])
 
@@ -617,7 +609,7 @@ with tab1:
     
     if st.button("Run Batch Assessment", type="primary"):
         if not uploaded_files:
-            st.warning("⚠️ Please upload at least one academic paper (PDF) to proceed.")
+            st.warning("Please upload at least one academic paper (PDF) to proceed.")
         else:
             results = []
             progress_bar = st.progress(0)
@@ -663,6 +655,12 @@ with tab1:
                 
             status_text.text("Batch processing complete!")
             
+            # Reset session states so bubble charts, history tables, and ML models refresh instantly
+            if 'last_trained_blocks' in st.session_state:
+                del st.session_state['last_trained_blocks']
+            if 'bubble_cache_key' in st.session_state:
+                st.session_state.bubble_cache_key = time.time()
+            
             df = pd.DataFrame(results)
             df_display = df.sort_values(by=["π-Index (0-100)"], ascending=False)
             st.markdown("### Assessment Summary")
@@ -685,7 +683,7 @@ with tab1:
         else:
             st.info("No assessment history found for your account.")
     else:
-        st.warning("🔒 Please connect your ORCID iD in the sidebar to view your private assessment history.")
+        st.warning("Please connect your ORCID iD in the sidebar to view your private assessment history.")
 
 with tab2:
     st.subheader("Epistemic Bubbles (Author & Portfolio Cartography)")
@@ -722,7 +720,11 @@ with tab3:
         block_height, weights, model_used, eval_hash, block_hash = epoch_data[0], epoch_data[1:9], epoch_data[9], epoch_data[10], epoch_data[11]
         current_pi_base = get_pi_float(block_height)
         
-        st.markdown(f"**Last Model Orchestration:** `{model_used}` | **Epoch Block:** `{block_height}` | **Pi Acc:** `{current_pi_base}`")
+        # Calculate total papers processed from the global blockchain database ledger records
+        cursor.execute("SELECT COUNT(DISTINCT eval_hash) FROM blockchain_por_weights WHERE eval_hash != 'genesis'")
+        total_papers_processed = cursor.fetchone()[0]
+
+        st.markdown(f"**Total Papers Processed (Blockchain Ledger):** `{total_papers_processed}` | **Last Model Orchestration:** `{model_used}` | **Epoch Block:** `{block_height}` | **Pi Acc:** `{current_pi_base}`")
         
         st.markdown(r"""
         **Weight Evolution Dynamics:**
@@ -781,7 +783,7 @@ with tab3:
 with tab4:
     st.subheader("π-Brain: Meta-Learning on the PoR Blockchain")
     st.info("""
-    **How it works:** Instead of relying on language models to process the next weight shift, this LSTM Neural Network treats your Proof of Review (PoR) blockchain as a time-series dataset. 
+    How it works: Instead of relying on language models to process the next weight shift, this LSTM Neural Network treats your Proof of Review (PoR) blockchain as a time-series dataset. 
     It trains on the historical evolution of previous epochs and predicts the exact mathematical trajectory of the next unmined epoch.
     """)
     
@@ -792,9 +794,9 @@ with tab4:
     lookback_window = 5
     
     if len(historical_rows) < lookback_window + 2:
-        st.warning(f"⚠️ Not enough blockchain data to train the meta-model. Current blocks: {len(historical_rows)}. You need at least {lookback_window + 2} blocks to form a training sequence. Please assess more papers.")
+        st.warning(f"Not enough blockchain data to train the meta-model. Current blocks: {len(historical_rows)}. You need at least {lookback_window + 2} blocks to form a training sequence. Please assess more papers.")
     else:
-        st.success(f"✅ Ready for training. {len(historical_rows)} blocks successfully extracted from the ledger.")
+        st.success(f"Ready for training. {len(historical_rows)} blocks successfully extracted from the ledger.")
         
         current_block_count = len(historical_rows)
         
@@ -845,7 +847,7 @@ with tab4:
             st.session_state.last_trained_blocks = current_block_count
             
         else:
-            st.info("⚡ Meta-model is cached and up-to-date with the latest blockchain ledger.")
+            st.info("Meta-model is cached and up-to-date with the latest blockchain ledger.")
 
         st.markdown("---")
         st.markdown("### Next Epoch Prediction vs. Current Epoch")
@@ -862,6 +864,4 @@ with tab4:
         st.markdown(f"**Mathematical Constraint Check:** Predicted Sum = `{sum(st.session_state.predicted_next_weights):.6f}` / `8.0`")
 
 st.markdown("---")
-st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_app_html=True)
-
-
+st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
