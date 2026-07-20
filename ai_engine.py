@@ -152,11 +152,11 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
         except Exception as e2:
             empty_scores = {k: 0.0 for k in ["C1_Originality", "C2_Methodological_Rigor", "C3_Interdisciplinary", "C4_Societal_Impact", "C5_Open_Science_Potential", "C6_Literature_Integration", "C7_Empirical_Density", "C8_Future_Actionability"]}
             return "Extraction Failed", pdf_meta_author or "Research Scholar", 0.0, 0.0, "N/A", "N/A", ["Unknown"], ["Unknown"], empty_scores, "Failed"
-        
+         
     cursor.execute("UPDATE global_eval_counter SET count = count + 1")
     cursor.execute("SELECT count FROM global_eval_counter")
     total_evals = cursor.fetchone()[0]
-        
+         
     cursor.execute("SELECT block_height, block_hash, w1, w2, w3, w4, w5, w6, w7, w8 FROM blockchain_por_weights ORDER BY block_height DESC LIMIT 1")
     epoch_data = cursor.fetchone()
     
@@ -172,7 +172,7 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
         active_weights = calculate_model_driven_weights(old_weights, scores, model_used, block_height)
         timestamp = datetime.now().isoformat()
         val_node, block_hash = validate_block_por(block_height + 1, active_weights, timestamp, previous_hash, file_hash, model_used)
-        cursor.execute('''INSERT INTO blockchain_por_weights (w1, w2, w3, w4, w5, w6, w7, w8, timestamp, previous_hash, validator_node, block_hash, eval_hash, model_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+        cursor.execute('''INSERT INTO blockchain_por_weights (w1, w2, w3, w4, w5, w6, w7, w8, timestamp, previous_hash, validator_node, block_hash, eval_hash, model_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                        (*active_weights, timestamp, previous_hash, val_node, block_hash, file_hash, model_used))
     else:
         active_weights = old_weights
@@ -189,7 +189,7 @@ def process_single_pdf(file_bytes, filename, scope, user_id):
     drift = calculate_complex_drift(scope_alignment, scores) if scope.strip() else "N/A"
     rec = get_recommendation_spectrum(final_score, drift) if scope.strip() else "N/A"
     
-    cursor.execute('''INSERT INTO papers_assessment (eval_hash, user_id, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, logic_score, scope_alignment, subfields, fields, author_name, final_score, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+    cursor.execute('''INSERT OR REPLACE INTO papers_assessment (eval_hash, user_id, title, filename, scope, c1, c2, c3, c4, c5, c6, c7, c8, logic_score, scope_alignment, subfields, fields, author_name, final_score, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                    (file_hash, user_id, title, filename, scope, *scores, logic_integrity, scope_alignment, json.dumps(subfields), json.dumps(fields), extracted_author, final_score, datetime.now().isoformat()))
     conn.commit()
     
