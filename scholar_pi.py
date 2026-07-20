@@ -601,6 +601,10 @@ with st.expander("View π-Index Grading Criteria & Theoretical Formulations"):
         st.markdown("**C8: Future Actionability**\nDetermines continuation potential using Lyapunov exponents.")
         st.markdown(r"$$F_a = \varpi_8 \cdot \frac{1}{\mathcal{Z}} \int_{\mathcal{X}} \frac{1}{1 + \exp\left(-\sum_{k=1}^K w_k(\eta_k(\mathbf{x}) - \eta_{0,k}) + \Lambda_{Lyapunov}\right)} d\mu(\mathbf{x}) \times 100 $$")
 
+# Initialize Session State tracking for Tab 2 cartography refresh triggers
+if 'cartography_refresh_key' not in st.session_state:
+    st.session_state.cartography_refresh_key = time.time()
+
 tab1, tab2, tab3, tab4 = st.tabs(["Batch Assessment", "Scope Cartography", "Active Epoch Constants", "π-Brain Neural Network"])
 
 with tab1:
@@ -655,8 +659,9 @@ with tab1:
                 
             status_text.text("Batch processing complete!")
             
+            # Invalidate all state caches and force immediate real-time refresh of Tab 2 cartography and neural network state
             st.session_state['last_trained_blocks'] = -1
-            st.session_state['cache_buster_timestamp'] = time.time()
+            st.session_state.cartography_refresh_key = time.time()
             
             df = pd.DataFrame(results)
             df_display = df.sort_values(by=["π-Index (0-100)"], ascending=False)
@@ -692,11 +697,11 @@ with tab2:
     
     selected_author = None
     if user_authors:
-        filter_choice = st.selectbox("Filter Cartography by Primary Author:", ["All Authors"] + user_authors)
+        filter_choice = st.selectbox("Filter Cartography by Primary Author:", ["All Authors"] + user_authors, key=f"author_filter_{st.session_state.cartography_refresh_key}")
         if filter_choice != "All Authors":
             selected_author = filter_choice
 
-    # Unconditionally rebuild chart on every interaction/request to ensure real-time synchronization
+    # Unconditionally rebuild chart on every interaction/request using the fresh state key
     interactive_html, table_html = generate_interactive_bubble_chart(current_user, target_author=selected_author)
     
     if interactive_html:
