@@ -1,9 +1,9 @@
 streamlit
-sqlite3
-requests
+torch
+torchvision
 numpy
 pandas
 pymupdf
 groq
 pyvis
-torch
+requests
