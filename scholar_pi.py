@@ -460,13 +460,11 @@ def generate_interactive_bubble_chart(scope, user_id):
             color=color_map[row['topic']]
         )
     
-    # Save safely to a temp file, then read it as a string to avoid PyVis file generation bugs
     with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp_file:
         net.save_graph(tmp_file.name)
         with open(tmp_file.name, 'r', encoding='utf-8') as f:
             html_string = f.read()
     
-    # Clean up temp file
     os.remove(tmp_file.name)
     
     table_html = "<style>.table-big { width: 100%; font-size: 14px; border-collapse: collapse; margin-top: 10px; font-family: sans-serif; } .table-big th { background-color: #2c3e50; color: white; padding: 10px; text-align: left; } .table-big td { border-bottom: 1px solid #ddd; padding: 8px; vertical-align: middle; } .color-box { width: 18px; height: 18px; display: inline-block; border-radius: 3px; border: 1px solid #ccc; margin: 0 auto;} .legend-container { max-height: 550px; overflow-y: auto; border: 1px solid #eee; }</style>"
@@ -756,7 +754,11 @@ with tab4:
     else:
         st.success(f"✅ Ready for training. {len(historical_rows)} blocks successfully extracted from the ledger.")
         
-        if st.button("Initialize & Train π-Brain", type="primary"):
+        current_block_count = len(historical_rows)
+        
+        # Determine if a fresh training loop is needed or if we can use the cached weights
+        if 'last_trained_blocks' not in st.session_state or st.session_state.last_trained_blocks != current_block_count:
+            st.markdown("### Training Log (Auto-Running)")
             weight_data = np.array(historical_rows, dtype=np.float32)
             
             dataset = PiBlockchainDataset(weight_data, lookback_window)
@@ -766,7 +768,6 @@ with tab4:
             loss_function = nn.MSELoss()
             optimizer = optim.Adam(model.parameters(), lr=0.001)
             
-            st.markdown("### Training Log")
             progress_bar = st.progress(0)
             status_text = st.empty()
             
@@ -798,21 +799,28 @@ with tab4:
             
             with torch.no_grad():
                 next_weights = model(seq_tensor).squeeze().numpy()
-                
-            st.markdown("---")
-            st.markdown("### Next Epoch Prediction vs. Current Epoch")
             
-            current_weights = weight_data[-1]
-            labels = ["C1: Originality", "C2: Method Rigor", "C3: Interdisciplinary", "C4: Societal Impact", "C5: Open Science", "C6: Lit Integration", "C7: Empirical Density", "C8: Actionability"]
+            # Cache the newly trained states so Streamlit doesn't repeatedly lag the UI
+            st.session_state.predicted_next_weights = next_weights
+            st.session_state.current_weights = weight_data[-1]
+            st.session_state.last_trained_blocks = current_block_count
             
-            df_compare = pd.DataFrame({
-                "Current Active Weights": current_weights,
-                "Predicted Next Epoch": next_weights
-            }, index=labels)
-            
-            st.bar_chart(df_compare, height=400)
-            
-            st.markdown(f"**Mathematical Constraint Check:** Predicted Sum = `{sum(next_weights):.6f}` / `8.0`")
+        else:
+            st.info("⚡ Meta-model is cached and up-to-date with the latest blockchain ledger.")
+
+        st.markdown("---")
+        st.markdown("### Next Epoch Prediction vs. Current Epoch")
+        
+        labels = ["C1: Originality", "C2: Method Rigor", "C3: Interdisciplinary", "C4: Societal Impact", "C5: Open Science", "C6: Lit Integration", "C7: Empirical Density", "C8: Actionability"]
+        
+        df_compare = pd.DataFrame({
+            "Current Active Weights": st.session_state.current_weights,
+            "Predicted Next Epoch": st.session_state.predicted_next_weights
+        }, index=labels)
+        
+        st.bar_chart(df_compare, height=400)
+        
+        st.markdown(f"**Mathematical Constraint Check:** Predicted Sum = `{sum(st.session_state.predicted_next_weights):.6f}` / `8.0`")
 
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray; font-size: 0.8em;'>Framework Author: Ali Vafadar Yengejeh | Università degli Studi di Milano-Bicocca</div>", unsafe_allow_html=True)
